@@ -312,6 +312,18 @@ if ($kategoriTerpilih && $merekTerpilih) {
     <section class="relative z-10 pb-20 pt-6">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
+            <!-- PENCARIAN PRODUK -->
+            <div class="mb-6">
+                <div class="relative max-w-2xl mx-auto">
+                    <i class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"></i>
+                    <input type="text" id="searchProduk" placeholder="Cari nama produk, SKU, merek, kategori..." autocomplete="off" class="w-full bg-white border border-gray-200 rounded-xl pl-11 pr-11 py-3.5 text-sm text-gray-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                    <button type="button" id="clearSearchProduk" class="hidden absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition items-center justify-center" aria-label="Hapus pencarian">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <p id="hasilPencarianProduk" class="text-xs text-purple-200 text-center mt-2 hidden"></p>
+            </div>
+
             <!-- INFORMASI FILTER -->
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
                 <div>
@@ -377,7 +389,7 @@ if ($kategoriTerpilih && $merekTerpilih) {
                             'id' => (int)$produk['id'],
                             'nama' => $produk['nama_produk'],
                             'kategori' => $kategoriModal,
-                            'merek' => $produk['nama_merek'] ?? 'Tanpa Merek',
+                            'merek' => !empty($produk['nama_merek']) ? $produk['nama_merek'] : 'Tanpa Merek',
                             'sku' => $produk['kode_sku'],
                             'harga' => (float)$produk['harga'],
                             'harga_pemasangan' => $hargaPemasanganData,
@@ -388,7 +400,10 @@ if ($kategoriTerpilih && $merekTerpilih) {
                         ?>
 
                         <!-- CARD PRODUK -->
-                        <div class="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex flex-col">
+                        <div
+                            class="produk-card bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex flex-col"
+                            data-search="<?= htmlspecialchars(strtolower($produk['nama_produk'] . ' ' . $produk['kode_sku'] . ' ' . (!empty($produk['nama_merek']) ? $produk['nama_merek'] : '') . ' ' . $kategoriModal . ' ' . $deskripsi), ENT_QUOTES, 'UTF-8') ?>"
+                        >
 
                             <!-- GAMBAR -->
                             <div class="h-56 bg-gray-100 flex items-center justify-center overflow-hidden">
@@ -672,6 +687,52 @@ if ($kategoriTerpilih && $merekTerpilih) {
 ========================================================= -->
 
 <script>
+
+/* =========================================================
+   SEARCH PRODUK REAL-TIME
+========================================================= */
+(function () {
+    const input = document.getElementById('searchProduk');
+    const clearButton = document.getElementById('clearSearchProduk');
+    const info = document.getElementById('hasilPencarianProduk');
+    const cards = document.querySelectorAll('.produk-card');
+    const totalProduk = cards.length;
+
+    if (!input) return;
+
+    function jalankanPencarian() {
+        const kataKunci = input.value.trim().toLowerCase();
+        let jumlahDitemukan = 0;
+
+        cards.forEach(function (card) {
+            const dataSearch = (card.getAttribute('data-search') || '').toLowerCase();
+            const cocok = kataKunci === '' || dataSearch.indexOf(kataKunci) !== -1;
+            card.style.display = cocok ? '' : 'none';
+            if (cocok) jumlahDitemukan++;
+        });
+
+        if (kataKunci !== '') {
+            clearButton.classList.remove('hidden');
+            clearButton.classList.add('flex');
+            info.classList.remove('hidden');
+            info.textContent = 'Menampilkan ' + jumlahDitemukan + ' dari ' + totalProduk + ' produk untuk "' + input.value.trim() + '"';
+        } else {
+            clearButton.classList.add('hidden');
+            clearButton.classList.remove('flex');
+            info.classList.add('hidden');
+            info.textContent = '';
+        }
+    }
+
+    input.addEventListener('input', jalankanPencarian);
+
+    clearButton.addEventListener('click', function () {
+        input.value = '';
+        jalankanPencarian();
+        input.focus();
+    });
+})();
+
 /* =========================================================
    BUKA DETAIL PRODUK
 ========================================================= */
