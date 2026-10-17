@@ -100,7 +100,7 @@ $dokumentasi = [
         'tipe' => 'gambar',
         'file' => 'assets/video-3.jpeg',
         'judul' => 'Teknisi BOSS CCTV',
-        'keterangan' => 'Dokumentasi teknisi saat melakukan pekerjaan di lapangan.'
+        'keterangan' => 'Teknisi BOSS CCTV.'
     ],
     [
         'tipe' => 'video',
@@ -291,25 +291,38 @@ $wa_number = '62895605091222';
                             
                             <div class="relative aspect-[4/3] overflow-hidden">
                                 <?php if (file_exists(__DIR__ . '/' . $foto['file'])): ?>
-                                    <?php if ($foto['tipe'] === 'video'): ?>
-                                        <video
-                                            class="w-full h-full object-cover bg-black"
-                                            controls
-                                            preload="metadata"
-                                            playsinline
-                                        >
-                                            <source src="<?= htmlspecialchars($foto['file']) ?>" type="video/mp4">
-                                            Browser Anda tidak mendukung pemutar video HTML5.
-                                        </video>
-                                    <?php else: ?>
-                                        <img
-                                            src="<?= htmlspecialchars($foto['file']) ?>"
-                                            alt="<?= htmlspecialchars($foto['judul']) ?>"
-                                            class="w-full h-full object-cover bg-black"
-                                        >
-                                    <?php endif; ?>
+                                    <button
+                                        type="button"
+                                        class="absolute inset-0 z-0 w-full h-full text-left media-preview"
+                                        onclick="openDokumentasi(<?= $index ?>)"
+                                        aria-label="Lihat <?= htmlspecialchars($foto['judul'], ENT_QUOTES, 'UTF-8') ?>"
+                                    >
+                                        <?php if ($foto['tipe'] === 'video'): ?>
+                                            <video
+                                                class="w-full h-full object-cover bg-black"
+                                                preload="metadata"
+                                                muted
+                                                playsinline
+                                                tabindex="-1"
+                                            >
+                                                <source src="<?= htmlspecialchars($foto['file']) ?>" type="video/mp4">
+                                            </video>
+                                            <span class="absolute inset-0 flex items-center justify-center">
+                                                <span class="w-16 h-16 rounded-full bg-black/50 border border-white/50 text-white flex items-center justify-center backdrop-blur-sm transition-transform duration-300 group-hover:scale-110">
+                                                    <i class="fa-solid fa-play text-2xl ml-1"></i>
+                                                </span>
+                                            </span>
+                                        <?php else: ?>
+                                            <img
+                                                src="<?= htmlspecialchars($foto['file']) ?>"
+                                                alt="<?= htmlspecialchars($foto['judul']) ?>"
+                                                class="w-full h-full object-cover bg-black"
+                                                loading="lazy"
+                                            >
+                                        <?php endif; ?>
+                                    </button>
                                 <?php else: ?>
-                                    <div class="image-placeholder w-full h-full flex flex-col items-center justify-center text-white">
+                                    <div class="image-placeholder relative z-0 w-full h-full flex flex-col items-center justify-center text-white">
                                         <i class="fa-solid <?= $foto['tipe'] === 'gambar' ? 'fa-image' : 'fa-video-slash' ?> text-5xl text-orange-400 opacity-80 mb-3"></i>
                                         <p class="text-sm font-bold">File <?= $index + 1 ?> Belum Tersedia</p>
                                         <p class="text-xs text-gray-300 mt-2 px-4 text-center">
@@ -348,6 +361,45 @@ $wa_number = '62895605091222';
     </section>
 </main>
 
+
+<!-- =========================================================
+     MODAL DOKUMENTASI PEKERJAAN
+========================================================= -->
+<div
+    id="dokumentasi-modal"
+    class="hidden fixed inset-0 z-[200] bg-slate-950/90 backdrop-blur-md p-3 sm:p-6"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="dokumentasi-title"
+>
+    <div class="min-h-full flex items-center justify-center">
+        <div
+            id="dokumentasi-container"
+            class="w-full max-w-5xl bg-slate-900 border border-white/15 rounded-2xl sm:rounded-3xl overflow-hidden shadow-2xl transform scale-95 transition-transform duration-300"
+        >
+            <div class="flex items-center justify-between gap-4 px-5 py-4 border-b border-white/10">
+                <div>
+                    <p class="text-cyan-300 text-xs uppercase tracking-widest font-bold">Galeri Lapangan</p>
+                    <h2 id="dokumentasi-title" class="text-white text-lg sm:text-xl font-bold mt-1"></h2>
+                </div>
+                <button
+                    type="button"
+                    onclick="closeDokumentasi()"
+                    class="w-10 h-10 shrink-0 rounded-full bg-white/10 hover:bg-red-500 text-white flex items-center justify-center transition"
+                    aria-label="Tutup dokumentasi"
+                >
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+
+            <div id="dokumentasi-media" class="bg-black flex items-center justify-center min-h-[220px] max-h-[70vh] overflow-hidden"></div>
+
+            <div class="px-5 py-4">
+                <p id="dokumentasi-keterangan" class="text-gray-300 text-sm sm:text-base leading-relaxed"></p>
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- =========================================================
      MODAL ARTIKEL 
@@ -400,6 +452,83 @@ $wa_number = '62895605091222';
 <!-- JAVASCRIPT MODAL -->
 <script>
 const articles = <?= json_encode($artikel, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+
+// =========================================================
+// MODAL DOKUMENTASI PEKERJAAN
+// =========================================================
+const dokumentasiData = <?= json_encode($dokumentasi, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+const dokumentasiModal = document.getElementById('dokumentasi-modal');
+const dokumentasiContainer = document.getElementById('dokumentasi-container');
+const dokumentasiMedia = document.getElementById('dokumentasi-media');
+
+function openDokumentasi(index) {
+    const item = dokumentasiData[index];
+    if (!item) return;
+
+    document.getElementById('dokumentasi-title').textContent = item.judul;
+    document.getElementById('dokumentasi-keterangan').textContent = item.keterangan;
+    dokumentasiMedia.replaceChildren();
+
+    if (item.tipe === 'video') {
+        const video = document.createElement('video');
+        video.controls = true;
+        video.autoplay = true;
+        video.playsInline = true;
+        video.preload = 'metadata';
+        video.className = 'block w-full max-h-[70vh] object-contain bg-black';
+
+        const source = document.createElement('source');
+        source.src = item.file;
+        source.type = 'video/mp4';
+        video.appendChild(source);
+        dokumentasiMedia.appendChild(video);
+        video.play().catch(() => {});
+    } else {
+        const image = document.createElement('img');
+        image.src = item.file;
+        image.alt = item.judul;
+        image.className = 'block w-full max-h-[70vh] object-contain bg-black';
+        dokumentasiMedia.appendChild(image);
+    }
+
+    dokumentasiModal.classList.remove('hidden');
+    document.body.classList.add('overflow-hidden');
+    requestAnimationFrame(() => {
+        dokumentasiContainer.classList.remove('scale-95');
+        dokumentasiContainer.classList.add('scale-100');
+    });
+}
+
+function closeDokumentasi() {
+    dokumentasiContainer.classList.remove('scale-100');
+    dokumentasiContainer.classList.add('scale-95');
+
+    const video = dokumentasiMedia.querySelector('video');
+    if (video) {
+        video.pause();
+        video.currentTime = 0;
+    }
+
+    setTimeout(() => {
+        dokumentasiModal.classList.add('hidden');
+        dokumentasiMedia.replaceChildren();
+        document.body.classList.remove('overflow-hidden');
+    }, 200);
+}
+
+dokumentasiModal.addEventListener('click', function (event) {
+    if (event.target === dokumentasiModal) {
+        closeDokumentasi();
+    }
+});
+
+document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && !dokumentasiModal.classList.contains('hidden')) {
+        closeDokumentasi();
+    }
+});
+
+
 const modalEl = document.getElementById('article-modal');
 const modalContainer = document.getElementById('modal-container');
 

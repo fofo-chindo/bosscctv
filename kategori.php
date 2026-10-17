@@ -6,7 +6,7 @@ require_once 'koneksi.php';
 include 'header.php';
 
 /* =========================================================
-   FILTER KATEGORI & MEREK
+   FILTER KATEGORI, MEREK & PAGINASI
 ========================================================= */
 
 $filterAktif = isset($_GET['kategori']) ? $_GET['kategori'] : 'semua';
@@ -15,6 +15,12 @@ $merekAktif  = isset($_GET['merek']) ? $_GET['merek'] : 'semua';
 $kategoriTerpilih = null;
 $merekTerpilih    = null;
 $produkList       = [];
+
+// Konfigurasi Paginasi
+$batas_produk = 10; // Jumlah produk per halaman
+$halaman_aktif = isset($_GET['halaman']) ? (int)$_GET['halaman'] : 1;
+if ($halaman_aktif < 1) $halaman_aktif = 1;
+$offset = ($halaman_aktif - 1) * $batas_produk;
 
 /* =========================================================
    AMBIL SEMUA KATEGORI
@@ -116,7 +122,47 @@ if ($merekAktif !== 'semua') {
 }
 
 /* =========================================================
-   AMBIL PRODUK MULTI-KATEGORI
+   HITUNG TOTAL PRODUK (UNTUK PAGINASI)
+========================================================= */
+$sqlCount = "
+    SELECT COUNT(DISTINCT p.id) AS total
+    FROM products p
+    LEFT JOIN product_categories pc ON pc.product_id = p.id
+    WHERE p.is_active = 1 AND p.is_featured = 0
+";
+
+$typesCount = '';
+$paramsCount = [];
+
+if ($kategoriTerpilih) {
+    $sqlCount .= " AND EXISTS (
+        SELECT 1 FROM product_categories pc_filter 
+        WHERE pc_filter.product_id = p.id AND pc_filter.category_id = ?
+    )";
+    $typesCount .= 'i';
+    $paramsCount[] = (int)$kategoriTerpilih['id'];
+}
+
+if ($merekTerpilih) {
+    $sqlCount .= " AND p.brand_id = ? ";
+    $typesCount .= 'i';
+    $paramsCount[] = (int)$merekTerpilih['id'];
+}
+
+$stmtCount = mysqli_prepare($koneksi, $sqlCount);
+if (!empty($paramsCount)) {
+    mysqli_stmt_bind_param($stmtCount, $typesCount, ...$paramsCount);
+}
+mysqli_stmt_execute($stmtCount);
+$resultCount = mysqli_stmt_get_result($stmtCount);
+$total_data = mysqli_fetch_assoc($resultCount)['total'];
+mysqli_stmt_close($stmtCount);
+
+$total_halaman = ceil($total_data / $batas_produk);
+
+
+/* =========================================================
+   AMBIL PRODUK MULTI-KATEGORI (DENGAN LIMIT)
 ========================================================= */
 
 $sqlProduk = "
@@ -144,14 +190,10 @@ $sqlProduk = "
         b.nama_merek,
         b.slug AS merek_slug
     FROM products p
-    LEFT JOIN product_categories pc
-        ON pc.product_id = p.id
-    LEFT JOIN categories c
-        ON c.id = pc.category_id
-    LEFT JOIN brands b
-        ON b.id = p.brand_id
-    WHERE p.is_active = 1
-    AND p.is_featured = 0
+    LEFT JOIN product_categories pc ON pc.product_id = p.id
+    LEFT JOIN categories c ON c.id = pc.category_id
+    LEFT JOIN brands b ON b.id = p.brand_id
+    WHERE p.is_active = 1 AND p.is_featured = 0
 ";
 
 $types = '';
@@ -166,7 +208,6 @@ if ($kategoriTerpilih) {
             AND pc_filter.category_id = ?
         )
     ";
-
     $types .= 'i';
     $params[] = (int)$kategoriTerpilih['id'];
 }
@@ -177,40 +218,31 @@ if ($merekTerpilih) {
     $params[] = (int)$merekTerpilih['id'];
 }
 
+// Tambahkan LIMIT untuk paginasi
 $sqlProduk .= "
     GROUP BY
-        p.id,
-        p.category_id,
-        p.brand_id,
-        p.kode_sku,
-        p.nama_produk,
-        p.deskripsi,
-        p.harga,
-        p.harga_pemasangan,
-        p.stok,
-        p.gambar,
-        b.nama_merek,
-        b.slug
+        p.id, p.category_id, p.brand_id, p.kode_sku, p.nama_produk, p.deskripsi, p.harga, p.harga_pemasangan, p.stok, p.gambar, b.nama_merek, b.slug
     ORDER BY p.id DESC
+    LIMIT ?, ?
 ";
+$types .= 'ii';
+$params[] = $offset;
+$params[] = $batas_produk;
+
 
 $stmtProduk = mysqli_prepare($koneksi, $sqlProduk);
-
 if (!$stmtProduk) {
     die('Query produk gagal: ' . htmlspecialchars(mysqli_error($koneksi)));
 }
-
 if (!empty($params)) {
     mysqli_stmt_bind_param($stmtProduk, $types, ...$params);
 }
-
 mysqli_stmt_execute($stmtProduk);
 $resultProduk = mysqli_stmt_get_result($stmtProduk);
 
 while ($row = mysqli_fetch_assoc($resultProduk)) {
     $produkList[] = $row;
 }
-
 mysqli_stmt_close($stmtProduk);
 
 /* =========================================================
@@ -316,7 +348,7 @@ if ($kategoriTerpilih && $merekTerpilih) {
             <div class="mb-6">
                 <div class="relative max-w-2xl mx-auto">
                     <i class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"></i>
-                    <input type="text" id="searchProduk" placeholder="Cari nama produk, SKU, merek, kategori..." autocomplete="off" class="w-full bg-white border border-gray-200 rounded-xl pl-11 pr-11 py-3.5 text-sm text-gray-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                    <input type="text" id="searchProduk" placeholder="Cari produk di halaman ini..." autocomplete="off" class="w-full bg-white border border-gray-200 rounded-xl pl-11 pr-11 py-3.5 text-sm text-gray-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
                     <button type="button" id="clearSearchProduk" class="hidden absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition items-center justify-center" aria-label="Hapus pencarian">
                         <i class="fa-solid fa-xmark"></i>
                     </button>
@@ -342,12 +374,13 @@ if ($kategoriTerpilih && $merekTerpilih) {
                 </div>
 
                 <div class="text-sm text-purple-200">
-                    Menampilkan <span class="font-semibold text-white"><?= count($produkList) ?></span> produk
+                    Menampilkan <span class="font-semibold text-white"><?= count($produkList) ?></span> dari <span class="font-semibold text-white"><?= $total_data ?></span> produk (Hal <?= $halaman_aktif ?>)
                 </div>
             </div>
 
             <?php if (!empty($produkList)): ?>
-                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                <!-- GRID DIUBAH MENJADI 2 KOLOM DI MOBILE (grid-cols-2) -->
+                <div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-6">
 
                     <?php foreach ($produkList as $produk): ?>
                         <?php
@@ -365,19 +398,14 @@ if ($kategoriTerpilih && $merekTerpilih) {
                             ? $produk['deskripsi']
                             : 'Belum ada deskripsi untuk produk ini.';
 
-                        $deskripsiPendek = mb_strlen($deskripsi) > 100
-                            ? mb_substr($deskripsi, 0, 100) . '...'
+                        $deskripsiPendek = mb_strlen($deskripsi) > 60
+                            ? mb_substr($deskripsi, 0, 60) . '...'
                             : $deskripsi;
 
                         $kategoriModal = !empty($daftarKategori)
                             ? implode(', ', $daftarKategori)
                             : 'Tanpa Kategori';
 
-                        /*
-                         * PENTING:
-                         * NULL tetap NULL agar produk tanpa pemasangan
-                         * tidak dianggap mempunyai harga Rp 0.
-                         */
                         $hargaPemasanganData =
                             ($produk['harga_pemasangan'] !== null &&
                              $produk['harga_pemasangan'] !== '' &&
@@ -401,105 +429,73 @@ if ($kategoriTerpilih && $merekTerpilih) {
 
                         <!-- CARD PRODUK -->
                         <div
-                            class="produk-card bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex flex-col"
+                            class="produk-card bg-white rounded-xl sm:rounded-2xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex flex-col"
                             data-search="<?= htmlspecialchars(strtolower($produk['nama_produk'] . ' ' . $produk['kode_sku'] . ' ' . (!empty($produk['nama_merek']) ? $produk['nama_merek'] : '') . ' ' . $kategoriModal . ' ' . $deskripsi), ENT_QUOTES, 'UTF-8') ?>"
                         >
 
-                            <!-- GAMBAR -->
-                            <div class="h-56 bg-gray-100 flex items-center justify-center overflow-hidden">
+                            <!-- GAMBAR (Ukuran disesuaikan untuk HP) -->
+                            <div class="h-32 sm:h-56 bg-gray-100 flex items-center justify-center overflow-hidden relative">
                                 <?php if (!empty($produk['gambar']) && file_exists('uploads/' . $produk['gambar'])): ?>
                                     <img
                                         src="<?= htmlspecialchars($gambarPath) ?>"
                                         alt="<?= htmlspecialchars($produk['nama_produk']) ?>"
-                                        class="w-full h-full object-contain p-4 hover:scale-105 transition-transform duration-300"
+                                        class="w-full h-full object-contain p-2 sm:p-4 hover:scale-105 transition-transform duration-300"
                                     >
                                 <?php else: ?>
                                     <div class="text-gray-300 text-center">
-                                        <i class="fa-solid fa-image text-5xl"></i>
-                                        <p class="text-xs mt-2">Tidak ada gambar</p>
+                                        <i class="fa-solid fa-image text-3xl sm:text-5xl"></i>
+                                        <p class="text-[10px] sm:text-xs mt-1 sm:mt-2">Tidak ada gambar</p>
                                     </div>
                                 <?php endif; ?>
                             </div>
 
                             <!-- INFORMASI PRODUK -->
-                            <div class="p-5 flex flex-col flex-grow">
+                            <div class="p-3 sm:p-5 flex flex-col flex-grow">
 
                                 <!-- KATEGORI & MEREK -->
-                                <div class="flex flex-wrap gap-2 mb-3">
+                                <div class="flex flex-wrap gap-1 sm:gap-2 mb-2 sm:mb-3">
                                     <?php if (!empty($daftarKategori)): ?>
-                                        <?php foreach ($daftarKategori as $namaKategori): ?>
-                                            <span class="inline-block w-fit bg-indigo-100 text-indigo-700 text-xs font-semibold px-3 py-1.5 rounded-full">
+                                        <?php foreach (array_slice($daftarKategori, 0, 1) as $namaKategori): // Ambil 1 kategori saja agar tidak penuh di HP ?>
+                                            <span class="inline-block w-fit bg-indigo-100 text-indigo-700 text-[9px] sm:text-xs font-semibold px-2 py-1 sm:px-3 sm:py-1.5 rounded-full">
                                                 <?= htmlspecialchars($namaKategori) ?>
                                             </span>
                                         <?php endforeach; ?>
                                     <?php else: ?>
-                                        <span class="inline-block w-fit bg-gray-100 text-gray-500 text-xs font-semibold px-3 py-1.5 rounded-full">
+                                        <span class="inline-block w-fit bg-gray-100 text-gray-500 text-[9px] sm:text-xs font-semibold px-2 py-1 sm:px-3 sm:py-1.5 rounded-full">
                                             Tanpa Kategori
                                         </span>
                                     <?php endif; ?>
 
                                     <?php if (!empty($produk['nama_merek'])): ?>
-                                        <span class="inline-block w-fit bg-purple-100 text-purple-700 text-xs font-semibold px-3 py-1.5 rounded-full">
+                                        <span class="inline-block w-fit bg-purple-100 text-purple-700 text-[9px] sm:text-xs font-semibold px-2 py-1 sm:px-3 sm:py-1.5 rounded-full">
                                             <?= htmlspecialchars($produk['nama_merek']) ?>
                                         </span>
                                     <?php endif; ?>
                                 </div>
 
                                 <!-- NAMA PRODUK -->
-                                <h3 class="text-lg font-bold text-gray-900 mb-2">
+                                <h3 class="text-sm sm:text-lg font-bold text-gray-900 mb-1 sm:mb-2 line-clamp-2 leading-snug">
                                     <?= htmlspecialchars($produk['nama_produk']) ?>
                                 </h3>
 
                                 <!-- SKU -->
-                                <p class="text-xs text-gray-400 mb-3">
+                                <p class="text-[10px] sm:text-xs text-gray-400 mb-2 sm:mb-3">
                                     SKU: <?= htmlspecialchars($produk['kode_sku']) ?>
                                 </p>
 
-                                <!-- DESKRIPSI -->
-                                <p class="text-sm text-gray-600 leading-relaxed mb-4 flex-grow">
-                                    <?= htmlspecialchars($deskripsiPendek) ?>
-                                </p>
-
                                 <!-- HARGA -->
-                                <div class="mb-4">
-                                    <p class="text-xs text-gray-500">Harga</p>
-
-                                    <p class="text-xl font-bold text-indigo-600">
+                                <div class="mb-3 sm:mb-4 mt-auto">
+                                    <p class="text-[10px] sm:text-xs text-gray-500">Harga</p>
+                                    <p class="text-base sm:text-xl font-bold text-indigo-600">
                                         Rp <?= number_format((float)$produk['harga'], 0, ',', '.') ?>
                                     </p>
-
-                                    <?php if ($hargaPemasanganData !== null): ?>
-                                        <div class="mt-2">
-                                            <p class="text-xs text-gray-500">
-                                                Harga + Pemasangan
-                                            </p>
-                                            <p class="text-base font-bold text-orange-500">
-                                                Rp <?= number_format($hargaPemasanganData, 0, ',', '.') ?>
-                                            </p>
-                                        </div>
-                                    <?php endif; ?>
                                 </div>
 
-                                <!-- STOK -->
-                                <div class="flex items-center justify-between mb-4">
-                                    <span class="text-sm text-gray-500">Stok</span>
-
-                                    <?php if ($produk['stok'] > 0): ?>
-                                        <span class="text-sm font-semibold text-green-600">
-                                            <?= (int)$produk['stok'] ?> tersedia
-                                        </span>
-                                    <?php else: ?>
-                                        <span class="text-sm font-semibold text-red-600">
-                                            Stok habis
-                                        </span>
-                                    <?php endif; ?>
-                                </div>
-
-                                <!-- DETAIL -->
+                                <!-- BUTTON DETAIL -->
                                 <button
                                     type="button"
                                     onclick='bukaDetailProduk(<?= htmlspecialchars(json_encode($dataProduk, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, "UTF-8") ?>)'
-                                    class="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2 shadow-md shadow-indigo-600/20"
+                                    class="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-2 sm:px-4 sm:py-3 rounded-lg sm:rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1 sm:gap-2 shadow-md shadow-indigo-600/20"
                                 >
                                     <i class="fa-solid fa-eye"></i>
                                     Lihat Detail
@@ -508,6 +504,45 @@ if ($kategoriTerpilih && $merekTerpilih) {
                         </div>
                     <?php endforeach; ?>
                 </div>
+
+                <!-- =====================================================
+                     KOTAK PAGINASI (HALAMAN) DI BAWAH GRID
+                ====================================================== -->
+                <?php if ($total_halaman > 1): ?>
+                    <div class="flex justify-center items-center gap-1 sm:gap-2 mt-10 sm:mt-12 mb-4">
+                        
+                        <!-- Tombol Prev -->
+                        <?php if ($halaman_aktif > 1): ?>
+                            <a href="?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $halaman_aktif - 1 ?>#area-kategori" 
+                               class="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl bg-white/10 hover:bg-indigo-600 text-white font-bold transition shadow-sm border border-white/20 text-xs sm:text-base">
+                                <i class="fa-solid fa-chevron-left"></i>
+                            </a>
+                        <?php endif; ?>
+
+                        <!-- Nomor Halaman -->
+                        <?php for ($i = 1; $i <= $total_halaman; $i++): ?>
+                            <?php if ($i == $halaman_aktif): ?>
+                                <span class="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl bg-indigo-600 text-white font-black shadow-md border border-indigo-500 text-xs sm:text-base">
+                                    <?= $i ?>
+                                </span>
+                            <?php else: ?>
+                                <a href="?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $i ?>#area-kategori" 
+                                   class="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl bg-white/10 hover:bg-white/30 text-white font-bold transition shadow-sm border border-white/20 text-xs sm:text-base">
+                                    <?= $i ?>
+                                </a>
+                            <?php endif; ?>
+                        <?php endfor; ?>
+
+                        <!-- Tombol Next -->
+                        <?php if ($halaman_aktif < $total_halaman): ?>
+                            <a href="?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $halaman_aktif + 1 ?>#area-kategori" 
+                               class="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl bg-white/10 hover:bg-indigo-600 text-white font-bold transition shadow-sm border border-white/20 text-xs sm:text-base">
+                                <i class="fa-solid fa-chevron-right"></i>
+                            </a>
+                        <?php endif; ?>
+
+                    </div>
+                <?php endif; ?>
 
             <?php else: ?>
                 <!-- PRODUK KOSONG -->
@@ -521,7 +556,7 @@ if ($kategoriTerpilih && $merekTerpilih) {
                     </h3>
 
                     <p class="text-gray-500 mt-2 max-w-md mx-auto">
-                        Belum ada produk untuk kombinasi Kategori dan Merek ini.
+                        Belum ada produk untuk kombinasi Kategori dan Merek ini di halaman ini.
                     </p>
 
                     <a
@@ -715,7 +750,7 @@ if ($kategoriTerpilih && $merekTerpilih) {
             clearButton.classList.remove('hidden');
             clearButton.classList.add('flex');
             info.classList.remove('hidden');
-            info.textContent = 'Menampilkan ' + jumlahDitemukan + ' dari ' + totalProduk + ' produk untuk "' + input.value.trim() + '"';
+            info.textContent = 'Menampilkan ' + jumlahDitemukan + ' dari ' + totalProduk + ' produk di halaman ini untuk "' + input.value.trim() + '"';
         } else {
             clearButton.classList.add('hidden');
             clearButton.classList.remove('flex');
@@ -878,6 +913,18 @@ document.addEventListener('keydown', function(event) {
 ========================================================= -->
 
 <style>
+/* Mencegah layar tergeser di mobile (Menghilangkan garis putih di kanan) */
+html, body {
+    overflow-x: hidden;
+    width: 100%;
+    position: relative;
+}
+
+/* Mencegah highlight kotak biru saat tap tombol di HP */
+* {
+    -webkit-tap-highlight-color: transparent;
+}
+
 .hide-scrollbar::-webkit-scrollbar {
     display: none;
 }
