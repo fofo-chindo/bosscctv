@@ -286,55 +286,54 @@ if ($kategoriTerpilih && $merekTerpilih) {
         </div>
     </section>
 
-    <!-- MENU KATEGORI + MEREK -->
-    <div class="sticky top-20 z-50 py-3 px-4 sm:px-6 lg:px-8 w-full bg-slate-950/60 backdrop-blur-xl border-b border-white/10 shadow-lg transition-all">
-        <div class="max-w-7xl mx-auto space-y-2">
+    <!-- =====================================================
+         MENU KATEGORI + MEREK (SAMA PERSIS DENGAN PRODUK.PHP)
+    ====================================================== -->
+    <div class="sticky top-20 z-50 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 mb-4 transition-all space-y-2">
+        
+        <!-- BARIS 1: FILTER KATEGORI -->
+        <div class="flex justify-center">
+            <div class="bg-[#111126]/95 backdrop-blur-xl border border-white/20 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.4)] p-1.5 pb-2.5 max-w-full overflow-x-auto custom-scrollbar">
+                <div class="flex items-center gap-1 min-w-max">
+                    <a href="kategori.php?kategori=semua&merek=<?= urlencode($merekAktif) ?>#area-kategori"
+                       class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $filterAktif === 'semua' ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
+                    >
+                        <i class="fa-solid fa-list text-[11px] <?= $filterAktif === 'semua' ? 'text-white' : 'text-blue-400' ?>"></i>
+                        Semua Kategori
+                    </a>
 
-            <!-- BAR KATEGORI -->
-            <div class="flex justify-center">
-                <div class="relative max-w-full w-full sm:w-auto">
-                    <div class="absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-slate-950/80 to-transparent pointer-events-none z-10 rounded-l-xl"></div>
-                    <div class="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-slate-950/80 to-transparent pointer-events-none z-10 rounded-r-xl"></div>
-
-                    <div class="flex max-w-full overflow-x-auto bg-white/10 backdrop-blur-md px-4 py-2.5 rounded-xl border border-white/15 gap-2.5 whitespace-nowrap custom-scrollbar items-center shadow-sm">
-                        <a href="kategori.php?kategori=semua&merek=<?= urlencode($merekAktif) ?>#area-kategori"
-                           class="px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-200 flex-shrink-0 <?= $filterAktif === 'semua' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-200 hover:bg-white/15 hover:text-white' ?>">
-                            Semua
+                    <?php foreach ($kategoriList as $item): ?>
+                        <?php $kategoriTerpilihItem = ($filterAktif === $item['slug']); ?>
+                        <a href="kategori.php?kategori=<?= urlencode($item['slug']) ?>&merek=<?= urlencode($merekAktif) ?>#area-kategori"
+                           class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $kategoriTerpilihItem ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
+                        >
+                            <?= htmlspecialchars($item['nama_kategori']) ?>
                         </a>
-
-                        <div class="w-px h-5 bg-white/20 mx-1 flex-shrink-0"></div>
-
-                        <?php foreach ($kategoriList as $item): ?>
-                            <a href="kategori.php?kategori=<?= urlencode($item['slug']) ?>&merek=<?= urlencode($merekAktif) ?>#area-kategori"
-                               class="px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-200 flex-shrink-0 <?= $filterAktif === $item['slug'] ? 'bg-blue-600 text-white shadow-md' : 'text-gray-200 hover:bg-white/15 hover:text-white' ?>">
-                                <?= htmlspecialchars($item['nama_kategori']) ?>
-                            </a>
-                        <?php endforeach; ?>
-                    </div>
+                    <?php endforeach; ?>
                 </div>
             </div>
+        </div>
 
-            <!-- BAR MEREK -->
-            <div class="flex justify-center">
-                <div class="relative max-w-full w-full sm:w-auto">
-                    <div class="absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-slate-950/80 to-transparent pointer-events-none z-10 rounded-l-xl"></div>
-                    <div class="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-slate-950/80 to-transparent pointer-events-none z-10 rounded-r-xl"></div>
+        <!-- BARIS 2: FILTER MEREK -->
+        <div class="flex justify-center">
+            <div class="bg-[#111126]/95 backdrop-blur-xl border border-white/20 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.4)] p-1.5 pb-2.5 max-w-full overflow-x-auto custom-scrollbar">
+                <div class="flex items-center gap-1 min-w-max">
+                    <a href="kategori.php?kategori=<?= urlencode($filterAktif) ?>&merek=semua#area-kategori"
+                       class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $merekAktif === 'semua' ? 'bg-gradient-to-r from-orange-500 to-orange-400 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
+                    >
+                        <i class="fa-solid fa-layer-group text-[11px] <?= $merekAktif === 'semua' ? 'text-white' : 'text-orange-400' ?>"></i>
+                        Semua Merek
+                    </a>
 
-                    <div class="flex max-w-full overflow-x-auto bg-white/5 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10 gap-2 whitespace-nowrap hide-scrollbar items-center shadow-inner">
-                        <a href="kategori.php?kategori=<?= urlencode($filterAktif) ?>&merek=semua#area-kategori"
-                           class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-200 flex-shrink-0 <?= $merekAktif === 'semua' ? 'bg-orange-500 text-white shadow-md font-bold' : 'text-gray-100 hover:bg-white/15 hover:text-white' ?>">
-                            <i class="fa-solid fa-layer-group mr-1.5 text-orange-400"></i>
-                            Semua Merek
+                    <?php foreach ($merekList as $merek): ?>
+                        <?php $merekTerpilihItem = ($merekAktif === $merek['slug']); ?>
+                        <a href="kategori.php?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merek['slug']) ?>#area-kategori"
+                           class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $merekTerpilihItem ? 'bg-gradient-to-r from-orange-500 to-orange-400 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
+                        >
+                            <i class="fa-solid fa-tag text-[10px] <?= $merekTerpilihItem ? 'text-white' : 'text-orange-400' ?>"></i>
+                            <?= htmlspecialchars($merek['nama_merek']) ?>
                         </a>
-
-                        <?php foreach ($merekList as $merek): ?>
-                            <a href="kategori.php?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merek['slug']) ?>#area-kategori"
-                               class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-200 flex-shrink-0 <?= $merekAktif === $merek['slug'] ? 'bg-orange-500 text-white shadow-md font-bold' : 'text-gray-100 hover:bg-white/15 hover:text-white' ?>">
-                                <i class="fa-solid fa-tag mr-1.5 text-orange-400"></i>
-                                <?= htmlspecialchars($merek['nama_merek']) ?>
-                            </a>
-                        <?php endforeach; ?>
-                    </div>
+                    <?php endforeach; ?>
                 </div>
             </div>
         </div>
@@ -925,35 +924,31 @@ html, body {
     -webkit-tap-highlight-color: transparent;
 }
 
-.hide-scrollbar::-webkit-scrollbar {
-    display: none;
-}
-
-.hide-scrollbar {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-}
-
+/* Garis Indikator Scroll Kustom */
 .custom-scrollbar {
+    /* Untuk Firefox */
     scrollbar-width: thin;
-    scrollbar-color: rgba(59, 130, 246, 0.5) transparent;
+    scrollbar-color: rgba(249, 115, 22, 0.8) transparent;
 }
 
+/* Untuk Chrome, Edge, Safari */
 .custom-scrollbar::-webkit-scrollbar {
-    height: 3px;
+    height: 4px; /* Ketebalan garis indikator */
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
-    background: transparent;
+    background: rgba(255, 255, 255, 0.05); /* Warna jalur latar belakang transparan */
+    border-radius: 10px;
+    margin: 0 10px; /* Jarak agar garis tidak mentok ke ujung kiri/kanan */
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(59, 130, 246, 0.5);
+    background: linear-gradient(to right, #3b82f6, #f97316); /* Gradasi warna garis (biru ke oranye) */
     border-radius: 10px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(59, 130, 246, 0.8);
+    background: #ea580c;
 }
 </style>
 

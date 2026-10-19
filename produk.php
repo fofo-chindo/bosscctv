@@ -7,11 +7,13 @@ include 'header.php';
 
 
 /* =========================================================
-   FILTER MEREK & PAGINASI
+   TANGKAP PARAMETER FILTER & PAGINASI
 ========================================================= */
 
 $merekAktif = $_GET['merek'] ?? 'semua';
 $merekId = ($merekAktif !== 'semua') ? (int)$merekAktif : 0;
+
+$kategoriAktif = $_GET['kategori'] ?? 'semua';
 
 // Konfigurasi Paginasi
 $batas_produk = 10; // Jumlah produk per halaman
@@ -21,68 +23,96 @@ $offset = ($halaman_aktif - 1) * $batas_produk;
 
 
 /* =========================================================
-   AMBIL SEMUA MEREK AKTIF
+   CARI ID KATEGORI TERPILIH (JIKA ADA)
+========================================================= */
+$kategoriId = 0;
+if ($kategoriAktif !== 'semua') {
+    $stmtKategori = $koneksi->prepare("SELECT id, nama_kategori FROM categories WHERE slug = ? LIMIT 1");
+    $stmtKategori->bind_param("s", $kategoriAktif);
+    $stmtKategori->execute();
+    $resKategori = $stmtKategori->get_result();
+    if ($rowKat = $resKategori->fetch_assoc()) {
+        $kategoriId = (int)$rowKat['id'];
+        $namaKategoriAktif = $rowKat['nama_kategori'];
+    }
+    $stmtKategori->close();
+}
+
+
+/* =========================================================
+   AMBIL SEMUA MEREK & KATEGORI UNTUK MENU
 ========================================================= */
 
 $query_merek = $koneksi->query("
-    SELECT id, nama_merek
-    FROM brands
-    WHERE is_active = 1
+    SELECT id, nama_merek 
+    FROM brands 
+    WHERE is_active = 1 
     ORDER BY nama_merek ASC
+");
+
+$query_kategori = $koneksi->query("
+    SELECT id, nama_kategori, slug 
+    FROM categories 
+    ORDER BY nama_kategori ASC
 ");
 
 
 /* =========================================================
-   HITUNG TOTAL & AMBIL PAKET CCTV (DENGAN LIMIT)
+   HITUNG TOTAL & AMBIL PAKET CCTV (DENGAN FILTER DINAMIS)
 ========================================================= */
 
+// Base kondisi WHERE (Sesuaikan dengan file produk awal Anda, is_featured = 1)
+$whereClause = "WHERE p.is_active = 1 AND p.is_featured = 1";
+$types = "";
+$params = [];
+
+// Tambahkan filter merek jika dipilih
 if ($merekId > 0) {
-
-    // 1. Hitung total data untuk merek ini
-    $stmtCount = $koneksi->prepare("
-        SELECT COUNT(id) AS total 
-        FROM products 
-        WHERE is_active = 1 AND is_featured = 1 AND brand_id = ?
-    ");
-    $stmtCount->bind_param("i", $merekId);
-    $stmtCount->execute();
-    $resultCount = $stmtCount->get_result();
-    $total_data = $resultCount->fetch_assoc()['total'];
-    $stmtCount->close();
-
-    // 2. Ambil data dengan LIMIT
-    $stmt = $koneksi->prepare("
-        SELECT p.*, b.nama_merek
-        FROM products p
-        LEFT JOIN brands b ON p.brand_id = b.id
-        WHERE p.is_active = 1 AND p.is_featured = 1 AND p.brand_id = ?
-        ORDER BY p.id DESC
-        LIMIT ?, ?
-    ");
-    $stmt->bind_param("iii", $merekId, $offset, $batas_produk);
-    $stmt->execute();
-    $query_produk = $stmt->get_result();
-
-} else {
-
-    // 1. Hitung total semua data
-    $queryCount = $koneksi->query("
-        SELECT COUNT(id) AS total 
-        FROM products 
-        WHERE is_active = 1 AND is_featured = 1
-    ");
-    $total_data = $queryCount->fetch_assoc()['total'];
-
-    // 2. Ambil data dengan LIMIT
-    $query_produk = $koneksi->query("
-        SELECT p.*, b.nama_merek
-        FROM products p
-        LEFT JOIN brands b ON p.brand_id = b.id
-        WHERE p.is_active = 1 AND p.is_featured = 1
-        ORDER BY p.id DESC
-        LIMIT $offset, $batas_produk
-    ");
+    $whereClause .= " AND p.brand_id = ?";
+    $types .= "i";
+    $params[] = $merekId;
 }
+
+// Tambahkan filter kategori jika dipilih (pakai relasi product_categories)
+if ($kategoriId > 0) {
+    $whereClause .= " AND EXISTS (SELECT 1 FROM product_categories pc WHERE pc.product_id = p.id AND pc.category_id = ?)";
+    $types .= "i";
+    $params[] = $kategoriId;
+}
+
+// 1. Hitung total data
+$sqlCount = "SELECT COUNT(p.id) AS total FROM products p $whereClause";
+$stmtCount = $koneksi->prepare($sqlCount);
+if (!empty($params)) {
+    $stmtCount->bind_param($types, ...$params);
+}
+$stmtCount->execute();
+$total_data = $stmtCount->get_result()->fetch_assoc()['total'];
+$stmtCount->close();
+
+// 2. Ambil data dengan LIMIT & OFFSET
+$sqlData = "
+    SELECT p.*, b.nama_merek 
+    FROM products p 
+    LEFT JOIN brands b ON p.brand_id = b.id 
+    $whereClause 
+    ORDER BY p.id DESC 
+    LIMIT ?, ?
+";
+$stmtData = $koneksi->prepare($sqlData);
+
+// Gabungkan parameter filter dengan parameter limit & offset
+$typesData = $types . "ii";
+$paramsData = $params;
+$paramsData[] = $offset;
+$paramsData[] = $batas_produk;
+
+if (!empty($paramsData)) {
+    $stmtData->bind_param($typesData, ...$paramsData);
+}
+$stmtData->execute();
+$query_produk = $stmtData->get_result();
+
 
 /* =========================================================
    JUMLAH & TOTAL HALAMAN
@@ -92,11 +122,9 @@ $jumlah_produk_ditampilkan = ($query_produk) ? $query_produk->num_rows : 0;
 
 
 /* =========================================================
-   NAMA MEREK AKTIF
+   NAMA MEREK AKTIF UNTUK TEKS INFORMASI
 ========================================================= */
-
 $namaMerekAktif = '';
-
 if ($merekId > 0) {
     $stmtNama = $koneksi->prepare("SELECT nama_merek FROM brands WHERE id = ? LIMIT 1");
     $stmtNama->bind_param("i", $merekId);
@@ -104,8 +132,7 @@ if ($merekId > 0) {
     $hasilNama = $stmtNama->get_result();
 
     if ($hasilNama && $hasilNama->num_rows > 0) {
-        $dataNama = $hasilNama->fetch_assoc();
-        $namaMerekAktif = $dataNama['nama_merek'];
+        $namaMerekAktif = $hasilNama->fetch_assoc()['nama_merek'];
     }
     $stmtNama->close();
 }
@@ -156,36 +183,56 @@ if ($merekId > 0) {
 
 
     <!-- =====================================================
-         FILTER MEREK
-         KECIL + RATA TENGAH
+         FILTER KATEGORI & MEREK
     ====================================================== -->
-    <div class="sticky top-20 z-50 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 mb-4 transition-all">
-        <!-- RATA TENGAH -->
+    <div class="sticky top-20 z-50 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 mb-4 transition-all space-y-2">
+        
+        <!-- BARIS 1: FILTER KATEGORI -->
         <div class="flex justify-center">
-            <!-- KOTAK FILTER -->
-            <div class="bg-[#111126]/95 backdrop-blur-xl border border-white/20 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.4)] p-1.5 max-w-full overflow-x-auto hide-scrollbar">
+            <div class="bg-[#111126]/95 backdrop-blur-xl border border-white/20 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.4)] p-1.5 pb-2.5 max-w-full overflow-x-auto custom-scrollbar">
                 <div class="flex items-center gap-1 min-w-max">
+                    <a href="produk.php?kategori=semua&merek=<?= urlencode($merekAktif) ?>"
+                       class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $kategoriAktif === 'semua' ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
+                    >
+                        <i class="fa-solid fa-list text-[11px] <?= $kategoriAktif === 'semua' ? 'text-white' : 'text-blue-400' ?>"></i>
+                        Semua Kategori
+                    </a>
 
-                    <!-- =================================================
-                         SEMUA MEREK
-                    ================================================== -->
-                    <a href="produk.php"
+                    <?php if (isset($query_kategori) && $query_kategori->num_rows > 0): ?>
+                        <?php while ($kategori = $query_kategori->fetch_assoc()): ?>
+                            <?php $kategoriTerpilih = ($kategoriAktif === $kategori['slug']); ?>
+                            <a href="produk.php?kategori=<?= urlencode($kategori['slug']) ?>&merek=<?= urlencode($merekAktif) ?>"
+                               class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $kategoriTerpilih ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
+                            >
+                                <?= htmlspecialchars($kategori['nama_kategori']) ?>
+                            </a>
+                        <?php endwhile; ?>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <!-- BARIS 2: FILTER MEREK -->
+        <div class="flex justify-center">
+            <div class="bg-[#111126]/95 backdrop-blur-xl border border-white/20 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.4)] p-1.5 pb-2.5 max-w-full overflow-x-auto custom-scrollbar">
+                <div class="flex items-center gap-1 min-w-max">
+                    <a href="produk.php?kategori=<?= urlencode($kategoriAktif) ?>&merek=semua"
                        class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $merekAktif === 'semua' ? 'bg-gradient-to-r from-orange-500 to-orange-400 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
                     >
                         <i class="fa-solid fa-layer-group text-[11px] <?= $merekAktif === 'semua' ? 'text-white' : 'text-orange-400' ?>"></i>
                         Semua Merek
                     </a>
 
-                    <!-- =================================================
-                         DAFTAR MEREK
-                    ================================================== -->
-                    <?php if ($query_merek && $query_merek->num_rows > 0): ?>
-                        <?php while ($merek = $query_merek->fetch_assoc()): ?>
+                    <?php if (isset($query_merek) && $query_merek->num_rows > 0): ?>
+                        <?php 
+                        $query_merek->data_seek(0);
+                        while ($merek = $query_merek->fetch_assoc()): 
+                        ?>
                             <?php
                             $merekIdItem = (int)$merek['id'];
                             $merekTerpilih = ((string)$merekAktif === (string)$merekIdItem);
                             ?>
-                            <a href="produk.php?merek=<?= $merekIdItem ?>"
+                            <a href="produk.php?kategori=<?= urlencode($kategoriAktif) ?>&merek=<?= $merekIdItem ?>"
                                class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $merekTerpilih ? 'bg-gradient-to-r from-orange-500 to-orange-400 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
                             >
                                 <i class="fa-solid fa-tag text-[10px] <?= $merekTerpilih ? 'text-white' : 'text-orange-400' ?>"></i>
@@ -193,7 +240,6 @@ if ($merekId > 0) {
                             </a>
                         <?php endwhile; ?>
                     <?php endif; ?>
-
                 </div>
             </div>
         </div>
@@ -221,18 +267,21 @@ if ($merekId > 0) {
     ====================================================== -->
     <div class="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mb-6">
         <div class="flex items-center justify-between gap-4">
-            <!-- INFORMASI MEREK -->
+            <!-- INFORMASI FILTER -->
             <div>
-                <?php if ($merekAktif === 'semua'): ?>
-                    <p class="text-sm text-purple-200">
-                        Halaman <?= $halaman_aktif ?> dari <?= $total_halaman ?: 1 ?>
-                    </p>
-                <?php else: ?>
-                    <p class="text-sm text-purple-200">
-                        Merek: <span class="font-bold text-white"><?= htmlspecialchars($namaMerekAktif) ?></span> 
-                        <span class="opacity-70">(Hal <?= $halaman_aktif ?>)</span>
-                    </p>
-                <?php endif; ?>
+                <p class="text-sm text-purple-200">
+                    <?php if ($kategoriAktif !== 'semua' && $merekAktif !== 'semua'): ?>
+                        Kategori: <span class="font-bold text-white"><?= htmlspecialchars($namaKategoriAktif) ?></span> | 
+                        Merek: <span class="font-bold text-white"><?= htmlspecialchars($namaMerekAktif) ?></span>
+                    <?php elseif ($kategoriAktif !== 'semua'): ?>
+                        Kategori: <span class="font-bold text-white"><?= htmlspecialchars($namaKategoriAktif) ?></span>
+                    <?php elseif ($merekAktif !== 'semua'): ?>
+                        Merek: <span class="font-bold text-white"><?= htmlspecialchars($namaMerekAktif) ?></span>
+                    <?php else: ?>
+                        Semua Kategori & Merek
+                    <?php endif; ?>
+                    <span class="opacity-70">(Hal <?= $halaman_aktif ?>)</span>
+                </p>
             </div>
 
             <!-- JUMLAH PRODUK -->
@@ -377,17 +426,12 @@ if ($merekId > 0) {
                         <i class="fa-solid fa-video text-5xl text-yellow-400 mb-4 block"></i>
                         <h3 class="text-xl font-bold">Tidak Ada Produk</h3>
                         <p class="text-purple-200 mt-2">
-                            <?php if ($merekAktif === 'semua'): ?>
-                                Belum ada Paket CCTV di halaman ini.
-                            <?php else: ?>
-                                Belum ada Paket CCTV untuk merek yang dipilih di halaman ini.
-                            <?php endif; ?>
+                            Belum ada Paket CCTV untuk kombinasi kategori dan merek ini di halaman ini.
                         </p>
-                        <?php if ($merekAktif !== 'semua' || $halaman_aktif > 1): ?>
-                            <a href="produk.php" class="inline-flex items-center gap-2 mt-6 bg-orange-500 hover:bg-orange-600 text-white font-bold px-5 py-3 rounded-xl transition">
-                                <i class="fa-solid fa-rotate-left"></i> Kembali ke Awal
-                            </a>
-                        <?php endif; ?>
+                        
+                        <a href="produk.php?kategori=semua&merek=semua" class="inline-flex items-center gap-2 mt-6 bg-orange-500 hover:bg-orange-600 text-white font-bold px-5 py-3 rounded-xl transition">
+                            <i class="fa-solid fa-rotate-left"></i> Kembali ke Awal
+                        </a>
                     </div>
 
                 <?php endif; ?>
@@ -401,7 +445,7 @@ if ($merekId > 0) {
                     
                     <!-- Tombol Prev -->
                     <?php if ($halaman_aktif > 1): ?>
-                        <a href="?merek=<?= $merekAktif ?>&halaman=<?= $halaman_aktif - 1 ?>" 
+                        <a href="?kategori=<?= urlencode($kategoriAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $halaman_aktif - 1 ?>" 
                            class="w-10 h-10 flex items-center justify-center rounded-xl bg-white/10 hover:bg-orange-500 text-white font-bold transition shadow-sm border border-white/20">
                             <i class="fa-solid fa-chevron-left"></i>
                         </a>
@@ -414,7 +458,7 @@ if ($merekId > 0) {
                                 <?= $i ?>
                             </span>
                         <?php else: ?>
-                            <a href="?merek=<?= $merekAktif ?>&halaman=<?= $i ?>" 
+                            <a href="?kategori=<?= urlencode($kategoriAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $i ?>" 
                                class="w-10 h-10 flex items-center justify-center rounded-xl bg-white/10 hover:bg-white/30 text-white font-bold transition shadow-sm border border-white/20">
                                 <?= $i ?>
                             </a>
@@ -423,7 +467,7 @@ if ($merekId > 0) {
 
                     <!-- Tombol Next -->
                     <?php if ($halaman_aktif < $total_halaman): ?>
-                        <a href="?merek=<?= $merekAktif ?>&halaman=<?= $halaman_aktif + 1 ?>" 
+                        <a href="?kategori=<?= urlencode($kategoriAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $halaman_aktif + 1 ?>" 
                            class="w-10 h-10 flex items-center justify-center rounded-xl bg-white/10 hover:bg-orange-500 text-white font-bold transition shadow-sm border border-white/20">
                             <i class="fa-solid fa-chevron-right"></i>
                         </a>
@@ -630,7 +674,7 @@ document.addEventListener('keydown', function(event) {
 </script>
 
 <style>
-/* 1. Mencegah layar tergeser ke samping (MENGHILANGKAN RUANG PUTIH DI KANAN LAYAR) */
+/* 1. Mencegah layar tergeser ke samping */
 html, body {
     overflow-x: hidden;
     width: 100%;
@@ -642,13 +686,31 @@ html, body {
     -webkit-tap-highlight-color: transparent;
 }
 
-/* 3. Menyembunyikan scrollbar pada filter merek */
-.hide-scrollbar::-webkit-scrollbar {
-    display: none;
+/* 3. Garis Indikator Scroll Kustom */
+.custom-scrollbar {
+    /* Untuk Firefox */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(249, 115, 22, 0.8) transparent;
 }
-.hide-scrollbar {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
+
+/* Untuk Chrome, Edge, Safari */
+.custom-scrollbar::-webkit-scrollbar {
+    height: 4px; /* Ketebalan garis indikator */
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05); /* Warna jalur latar belakang transparan */
+    border-radius: 10px;
+    margin: 0 10px; /* Jarak agar garis tidak mentok ke ujung kiri/kanan */
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background: linear-gradient(to right, #3b82f6, #f97316); /* Gradasi warna garis (biru ke oranye) */
+    border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #ea580c;
 }
 </style>
 
