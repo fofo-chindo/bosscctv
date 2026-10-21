@@ -215,52 +215,72 @@ $wa_number = '62895605091222';
             </div>
 
             <!-- GRID ARTIKEL (Glowing Cards) -->
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 mb-28">
-                <?php foreach ($artikel as $index =>$item): ?>
+                        <!-- GRID ARTIKEL (Glowing Cards) -->
+            <div class="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-5 lg:gap-8 mb-16 md:mb-28">
+
+                <?php foreach ($artikel as $index => $item): ?>
+
                     <!-- Container Relative untuk Efek Glow di Belakang -->
                     <div class="relative group h-full">
-                        
+
                         <!-- Glow Background Effect pada Hover -->
-                        <div class="absolute -inset-0.5 bg-gradient-to-r <?= $item['warna'] ?> rounded-[2.5rem] blur opacity-0 group-hover:opacity-40 transition duration-500"></div>
-                        
-                        <article class="relative h-full bg-white/95 backdrop-blur-xl rounded-[2rem] overflow-hidden border border-white/40 shadow-2xl transform group-hover:-translate-y-2 transition-all duration-300 flex flex-col z-10">
-                            
+                        <div class="absolute -inset-0.5 bg-gradient-to-r <?= $item['warna'] ?> rounded-2xl md:rounded-[2.5rem] blur opacity-0 group-hover:opacity-40 transition duration-500"></div>
+
+                        <article class="relative h-full bg-white/95 backdrop-blur-xl rounded-2xl md:rounded-[2rem] overflow-hidden border border-white/40 shadow-2xl transform md:group-hover:-translate-y-2 transition-all duration-300 flex flex-col z-10">
+
                             <!-- Header / Gambar Artikel -->
-                            <div class="relative h-48 bg-gradient-to-br <?= $item['warna'] ?> overflow-hidden shrink-0 flex items-center justify-center">
+                            <div class="relative h-28 sm:h-36 md:h-48 bg-gradient-to-br <?= $item['warna'] ?> overflow-hidden shrink-0 flex items-center justify-center">
+
                                 <!-- Lingkaran Abstrak -->
-                                <div class="absolute -right-6 -bottom-6 w-32 h-32 rounded-full bg-white/10 group-hover:scale-150 transition-transform duration-700"></div>
-                                <div class="absolute -left-10 -top-10 w-40 h-40 rounded-full bg-white/10 group-hover:scale-150 transition-transform duration-700"></div>
-                                
+                                <div class="absolute -right-6 -bottom-6 w-24 h-24 md:w-32 md:h-32 rounded-full bg-white/10 md:group-hover:scale-150 transition-transform duration-700"></div>
+
+                                <div class="absolute -left-10 -top-10 w-28 h-28 md:w-40 md:h-40 rounded-full bg-white/10 md:group-hover:scale-150 transition-transform duration-700"></div>
+
                                 <div class="relative flex flex-col items-center justify-center text-white z-10">
-                                    <div class="w-16 h-16 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center mb-3 shadow-lg transform group-hover:rotate-12 transition-transform duration-300">
-                                        <i class="fa-solid <?= $item['icon'] ?> text-3xl drop-shadow-md"></i>
+
+                                    <div class="w-12 h-12 md:w-16 md:h-16 bg-white/20 backdrop-blur-md rounded-xl md:rounded-2xl flex items-center justify-center mb-2 md:mb-3 shadow-lg md:group-hover:rotate-12 transition-transform duration-300">
+                                        <i class="fa-solid <?= $item['icon'] ?> text-2xl md:text-3xl drop-shadow-md"></i>
                                     </div>
-                                    <span class="px-4 py-1 rounded-full bg-black/20 text-[10px] font-bold uppercase tracking-widest shadow-inner">
+
+                                    <span class="px-3 md:px-4 py-1 rounded-full bg-black/20 text-[9px] md:text-[10px] font-bold uppercase tracking-widest shadow-inner">
                                         <?= htmlspecialchars($item['kategori']) ?>
                                     </span>
+
                                 </div>
                             </div>
 
                             <!-- Konten Artikel -->
-                            <div class="p-6 md:p-8 flex flex-col flex-grow">
-                                <p class="text-xs text-indigo-500 font-bold mb-2 flex items-center gap-1.5">
-                                    <i class="fa-regular fa-clock"></i> <?= htmlspecialchars($item['tanggal']) ?>
+                            <div class="p-3 sm:p-4 md:p-8 flex flex-col flex-grow">
+
+                                <p class="text-[10px] sm:text-xs text-indigo-500 font-bold mb-2 flex items-center gap-1.5">
+                                    <i class="fa-regular fa-clock"></i>
+                                    <?= htmlspecialchars($item['tanggal']) ?>
                                 </p>
-                                <h3 class="text-xl font-extrabold text-gray-900 leading-tight mb-3 line-clamp-2">
+
+                                <h3 class="text-sm sm:text-base md:text-xl font-extrabold text-gray-900 leading-snug mb-2 md:mb-3 line-clamp-3">
                                     <?= htmlspecialchars($item['judul']) ?>
                                 </h3>
-                                <p class="text-sm text-gray-500 leading-relaxed line-clamp-3 mb-6 flex-grow">
+
+                                <p class="text-xs sm:text-sm text-gray-500 leading-relaxed line-clamp-3 mb-3 md:mb-6 flex-grow">
                                     <?= htmlspecialchars($item['ringkas']) ?>
                                 </p>
-                                
+
                                 <!-- Tombol Modern -->
-                                <button type="button" onclick="openArticle(<?= $index ?>)" class="w-full inline-flex items-center justify-center gap-2 bg-indigo-50 text-indigo-600 hover:bg-gradient-to-r hover:from-indigo-600 hover:to-blue-600 hover:text-white font-bold text-sm px-5 py-3 rounded-xl transition-all duration-300 shadow-sm hover:shadow-md group/btn">
-                                    Baca Detail <i class="fa-solid fa-arrow-right text-xs transform group-hover/btn:translate-x-1 transition-transform"></i>
+                                <button
+                                    type="button"
+                                    onclick="openArticle(<?= $index ?>)"
+                                    class="w-full inline-flex items-center justify-center gap-1 md:gap-2 bg-indigo-50 text-indigo-600 hover:bg-gradient-to-r hover:from-indigo-600 hover:to-blue-600 hover:text-white font-bold text-[11px] sm:text-xs md:text-sm px-2 sm:px-4 md:px-5 py-2.5 md:py-3 rounded-lg md:rounded-xl transition-all duration-300 shadow-sm hover:shadow-md group/btn"
+                                >
+                                    Baca Detail
+                                    <i class="fa-solid fa-arrow-right text-[10px] md:text-xs transform md:group-hover/btn:translate-x-1 transition-transform"></i>
                                 </button>
+
                             </div>
                         </article>
                     </div>
+
                 <?php endforeach; ?>
+
             </div>
 
 
