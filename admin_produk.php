@@ -231,12 +231,14 @@ if (
             kode_sku,
             nama_produk,
             deskripsi,
+            spesifikasi,
             harga,
             harga_pemasangan,
             stok,
             gambar,
             is_active,
-            is_featured
+            is_featured,
+            parent_id
         FROM products
         WHERE id = ?
         LIMIT 1
@@ -264,9 +266,30 @@ if (
     }
 
     $produk = $hasil->fetch_assoc();
-
     $stmt->close();
 
+    // Jika edit diklik pada sebuah varian, gunakan produk induknya.
+    if (!empty($produk['parent_id'])) {
+        $idInduk = (int)$produk['parent_id'];
+        $stmtInduk = $koneksi->prepare("
+            SELECT id, category_id, brand_id, kode_sku, nama_produk, deskripsi, spesifikasi,
+                   harga, harga_pemasangan, stok, gambar, is_active, is_featured, parent_id
+            FROM products
+            WHERE id = ? AND parent_id IS NULL
+            LIMIT 1
+        ");
+        $stmtInduk->bind_param("i", $idInduk);
+        $stmtInduk->execute();
+        $hasilInduk = $stmtInduk->get_result();
+        if ($hasilInduk->num_rows === 0) {
+            $stmtInduk->close();
+            echo json_encode(['success' => false, 'message' => 'Produk induk tidak ditemukan.']);
+            exit;
+        }
+        $produk = $hasilInduk->fetch_assoc();
+        $stmtInduk->close();
+        $id = $idInduk;
+    }
 
     // Ambil semua kategori
     $kategori_ids = [];
@@ -310,6 +333,30 @@ if (
     }
 
 
+    // Ambil semua varian aktif
+    $varianProduk = [];
+    $stmtVarianAjax = $koneksi->prepare("
+        SELECT id, kode_sku, nama_produk, harga, stok, gambar, is_active
+        FROM products
+        WHERE parent_id = ? AND is_active = 1
+        ORDER BY id ASC
+    ");
+    $stmtVarianAjax->bind_param("i", $id);
+    $stmtVarianAjax->execute();
+    $hasilVarianAjax = $stmtVarianAjax->get_result();
+    while ($v = $hasilVarianAjax->fetch_assoc()) {
+        $varianProduk[] = [
+            'id' => (int)$v['id'],
+            'kode_sku' => $v['kode_sku'],
+            'nama_produk' => $v['nama_produk'],
+            'harga' => (float)$v['harga'],
+            'stok' => (int)$v['stok'],
+            'gambar' => $v['gambar'],
+            'is_active' => (int)$v['is_active'],
+        ];
+    }
+    $stmtVarianAjax->close();
+
     echo json_encode([
         'success' => true,
         'produk' => [
@@ -319,6 +366,7 @@ if (
             'kode_sku' => $produk['kode_sku'],
             'nama_produk' => $produk['nama_produk'],
             'deskripsi' => $produk['deskripsi'],
+            'spesifikasi' => $produk['spesifikasi'],
             'harga' => (float)$produk['harga'],
             'harga_pemasangan' =>
                 $produk['harga_pemasangan'] !== null
@@ -328,6 +376,9 @@ if (
             'gambar' => $produk['gambar'],
             'is_active' => (int)$produk['is_active'],
             'is_featured' => (int)$produk['is_featured'],
+            'parent_id' => !empty($produk['parent_id']) ? (int)$produk['parent_id'] : null,
+            'is_paket_cctv' => count($varianProduk) > 0,
+            'varian' => $varianProduk,
             'kategori_ids' => $kategori_ids
         ]
     ]);
@@ -337,7 +388,409 @@ if (
 
 
 // ======================================================
-// PROSES TAMBAH / EDIT PRODUK
+// PROSES TAMBAH PAKET CCTV (INDUK + SEMUA VARIAN)
+// ======================================================
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST' &&
+    isset($_POST['simpan_paket_cctv'])
+) {
+    $nama_dasar = trim($_POST['nama_paket'] ?? '');
+    $brand_id = (int)($_POST['brand_id'] ?? 0);
+    $deskripsi = trim($_POST['deskripsi'] ?? '');
+    $spesifikasi = trim($_POST['spesifikasi'] ?? '');
+    $kategori_ids = $_POST['kategori_id'] ?? [];
+
+    if (!is_array($kategori_ids)) {
+        $kategori_ids = [$kategori_ids];
+    }
+    $kategori_ids = array_values(array_unique(array_filter(array_map('intval', $kategori_ids), static fn($id) => $id > 0)));
+
+    $v_nama_list = $_POST['paket_v_nama'] ?? [];
+    $v_harga_list = $_POST['paket_v_harga'] ?? [];
+    $v_stok_list = $_POST['paket_v_stok'] ?? [];
+
+    $varianInput = [];
+    foreach ($v_nama_list as $index => $namaVarian) {
+        $namaVarian = trim((string)$namaVarian);
+        if ($namaVarian === '') {
+            continue;
+        }
+        $hargaVarian = cleanPrice($v_harga_list[$index] ?? 0);
+        $stokVarian = filter_var($v_stok_list[$index] ?? null, FILTER_VALIDATE_INT);
+        if ($hargaVarian <= 0 || $stokVarian === false || $stokVarian < 0) {
+            header("Location: admin_produk.php?status=gagal&pesan=" . urlencode("Setiap varian wajib memiliki harga lebih dari 0 dan stok tidak boleh negatif."));
+            exit;
+        }
+        $varianInput[] = [
+            'source_index' => $index,
+            'nama' => $namaVarian,
+            'harga' => $hargaVarian,
+            'stok' => $stokVarian,
+            'gambar' => ''
+        ];
+    }
+
+    if ($nama_dasar === '' || $brand_id <= 0 || empty($kategori_ids) || empty($varianInput)) {
+        header("Location: admin_produk.php?status=gagal&pesan=" . urlencode("Mohon lengkapi nama paket, merek, kategori, dan minimal satu varian."));
+        exit;
+    }
+
+    $cekBrand = $koneksi->prepare("SELECT id FROM brands WHERE id = ? AND is_active = 1 LIMIT 1");
+    $cekBrand->bind_param("i", $brand_id);
+    $cekBrand->execute();
+    $brandValid = $cekBrand->get_result()->num_rows > 0;
+    $cekBrand->close();
+    if (!$brandValid) {
+        header("Location: admin_produk.php?status=gagal&pesan=" . urlencode("Merek tidak ditemukan atau sedang nonaktif."));
+        exit;
+    }
+
+    $cekKategori = $koneksi->prepare("SELECT id FROM categories WHERE id = ? LIMIT 1");
+    foreach ($kategori_ids as $kid) {
+        $cekKategori->bind_param("i", $kid);
+        $cekKategori->execute();
+        if ($cekKategori->get_result()->num_rows === 0) {
+            $cekKategori->close();
+            header("Location: admin_produk.php?status=gagal&pesan=" . urlencode("Salah satu kategori tidak ditemukan."));
+            exit;
+        }
+    }
+    $cekKategori->close();
+
+    foreach ($varianInput as &$varian) {
+        $index = $varian['source_index'];
+        if (!isset($_FILES['paket_v_gambar']['error'][$index]) ||
+            $_FILES['paket_v_gambar']['error'][$index] === UPLOAD_ERR_NO_FILE) {
+            continue;
+        }
+        if ($_FILES['paket_v_gambar']['error'][$index] !== UPLOAD_ERR_OK) {
+            unset($varian);
+            header("Location: admin_produk.php?status=gagal&pesan=" . urlencode("Gagal membaca salah satu gambar varian."));
+            exit;
+        }
+        $tmp = $_FILES['paket_v_gambar']['tmp_name'][$index];
+        $ext = strtolower(pathinfo($_FILES['paket_v_gambar']['name'][$index], PATHINFO_EXTENSION));
+        $size = (int)($_FILES['paket_v_gambar']['size'][$index] ?? 0);
+        $mime = function_exists('mime_content_type') ? mime_content_type($tmp) : '';
+        if (!in_array($ext, ['jpg', 'jpeg', 'png'], true) || $size > 5 * 1024 * 1024 ||
+            !in_array($mime, ['image/jpeg', 'image/png'], true)) {
+            unset($varian);
+            header("Location: admin_produk.php?status=gagal&pesan=" . urlencode("Gambar varian harus JPG/PNG yang valid dan maksimal 5 MB."));
+            exit;
+        }
+        if (!is_dir('uploads') && !mkdir('uploads', 0755, true) && !is_dir('uploads')) {
+            unset($varian);
+            header("Location: admin_produk.php?status=gagal&pesan=" . urlencode("Folder uploads tidak dapat dibuat."));
+            exit;
+        }
+        $newName = 'paket_' . bin2hex(random_bytes(8)) . '.' . $ext;
+        if (!move_uploaded_file($tmp, 'uploads/' . $newName)) {
+            unset($varian);
+            header("Location: admin_produk.php?status=gagal&pesan=" . urlencode("Gagal menyimpan gambar varian."));
+            exit;
+        }
+        $varian['gambar'] = $newName;
+    }
+    unset($varian);
+
+    $kategori_utama = $kategori_ids[0];
+    $varianPertama = $varianInput[0];
+    $skuInduk = 'SKU-PKT-' . date('YmdHis') . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 4));
+
+    $koneksi->begin_transaction();
+    try {
+        $stmt = $koneksi->prepare("
+            INSERT INTO products
+                (category_id, brand_id, kode_sku, nama_produk, deskripsi, spesifikasi, harga, harga_pemasangan, stok, gambar, is_active, is_featured, parent_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, 1, NULL)
+        ");
+        $hargaInduk = (float)$varianPertama['harga'];
+        $stokInduk = (int)$varianPertama['stok'];
+        $gambarInduk = (string)$varianPertama['gambar'];
+        $stmt->bind_param("iissssdis", $kategori_utama, $brand_id, $skuInduk, $nama_dasar, $deskripsi, $spesifikasi, $hargaInduk, $stokInduk, $gambarInduk);
+        if (!$stmt->execute()) {
+            throw new Exception("Gagal menyimpan produk induk: " . $stmt->error);
+        }
+        $id_induk_baru = (int)$stmt->insert_id;
+        $stmt->close();
+
+        $stmtKategori = $koneksi->prepare("INSERT INTO product_categories (product_id, category_id) VALUES (?, ?)");
+        foreach ($kategori_ids as $kid) {
+            $stmtKategori->bind_param("ii", $id_induk_baru, $kid);
+            if (!$stmtKategori->execute()) {
+                throw new Exception("Gagal menyimpan kategori paket: " . $stmtKategori->error);
+            }
+        }
+        $stmtKategori->close();
+
+        $stmtVarian = $koneksi->prepare("
+            INSERT INTO products
+                (category_id, brand_id, kode_sku, nama_produk, deskripsi, spesifikasi, harga, harga_pemasangan, stok, gambar, is_active, is_featured, parent_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, 0, ?)
+        ");
+        $stmtKategoriAnak = $koneksi->prepare("INSERT INTO product_categories (product_id, category_id) VALUES (?, ?)");
+
+        foreach ($varianInput as $varian) {
+            $skuVarian = 'SKU-PKT-' . date('YmdHis') . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 4));
+            $namaVarianDB = (string)$varian['nama'];
+            $hargaVarianDB = (float)$varian['harga'];
+            $stokVarianDB = (int)$varian['stok'];
+            $gambarVarianDB = (string)$varian['gambar'];
+            $stmtVarian->bind_param("iissssdisi", $kategori_utama, $brand_id, $skuVarian, $namaVarianDB, $deskripsi, $spesifikasi, $hargaVarianDB, $stokVarianDB, $gambarVarianDB, $id_induk_baru);
+            if (!$stmtVarian->execute()) {
+                throw new Exception("Gagal menyimpan varian {$varian['nama']}: " . $stmtVarian->error);
+            }
+            $idAnak = (int)$stmtVarian->insert_id;
+            foreach ($kategori_ids as $kid) {
+                $stmtKategoriAnak->bind_param("ii", $idAnak, $kid);
+                if (!$stmtKategoriAnak->execute()) {
+                    throw new Exception("Gagal menyimpan kategori varian: " . $stmtKategoriAnak->error);
+                }
+            }
+        }
+        $stmtVarian->close();
+        $stmtKategoriAnak->close();
+
+        $varianTermurah = $varianInput[0];
+        foreach ($varianInput as $itemVarian) {
+            if ($itemVarian['harga'] < $varianTermurah['harga']) {
+                $varianTermurah = $itemVarian;
+            }
+        }
+        $hargaKatalog = (float)$varianTermurah['harga'];
+        $gambarKatalog = (string)($varianTermurah['gambar'] !== '' ? $varianTermurah['gambar'] : $gambarInduk);
+        $stmtInduk = $koneksi->prepare("UPDATE products SET harga = ?, gambar = ? WHERE id = ?");
+        $stmtInduk->bind_param("dsi", $hargaKatalog, $gambarKatalog, $id_induk_baru);
+        if (!$stmtInduk->execute()) {
+            throw new Exception("Gagal memperbarui harga katalog paket: " . $stmtInduk->error);
+        }
+        $stmtInduk->close();
+
+        $koneksi->commit();
+        header("Location: admin_produk.php?status=sukses_tambah");
+        exit;
+    } catch (Throwable $e) {
+        $koneksi->rollback();
+        header("Location: admin_produk.php?status=gagal&pesan=" . urlencode("Paket tidak berhasil disimpan. " . $e->getMessage()));
+        exit;
+    }
+}
+
+
+// ======================================================
+// EDIT PRODUK INDUK + SELURUH VARIAN DALAM SATU FORM
+// ======================================================
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST' &&
+    isset($_POST['update_produk']) &&
+    ($_POST['edit_paket_cctv'] ?? '') === '1'
+) {
+    $parentId = (int)($_POST['product_id'] ?? 0);
+    $namaInduk = trim((string)($_POST['nama_produk'] ?? ''));
+    $brandId = (int)($_POST['brand_id'] ?? 0);
+    $deskripsi = trim((string)($_POST['deskripsi'] ?? ''));
+    $spesifikasi = trim((string)($_POST['spesifikasi'] ?? ''));
+    $isFeatured = isset($_POST['is_featured']) ? 1 : 0;
+
+    $kategoriIds = $_POST['kategori_id'] ?? [];
+    if (!is_array($kategoriIds)) $kategoriIds = [$kategoriIds];
+    $kategoriIds = array_values(array_unique(array_filter(array_map('intval', $kategoriIds), static fn($x) => $x > 0)));
+
+    $varianIds = $_POST['paket_edit_id'] ?? [];
+    $varianNama = $_POST['paket_edit_nama'] ?? [];
+    $varianHarga = $_POST['paket_edit_harga'] ?? [];
+    $varianStok = $_POST['paket_edit_stok'] ?? [];
+    if (!is_array($varianIds) || !is_array($varianNama) || !is_array($varianHarga) || !is_array($varianStok)) {
+        header('Location: admin_produk.php?status=gagal&pesan=' . urlencode('Data varian tidak valid.'));
+        exit;
+    }
+    if ($parentId <= 0 || $namaInduk === '' || $brandId <= 0 || empty($kategoriIds)) {
+        header('Location: admin_produk.php?status=gagal&pesan=' . urlencode('Nama produk, merek, dan kategori wajib diisi.'));
+        exit;
+    }
+    if (count($varianNama) < 1) {
+        header('Location: admin_produk.php?status=gagal&pesan=' . urlencode('Minimal harus ada satu varian aktif.'));
+        exit;
+    }
+
+    $stmt = $koneksi->prepare('SELECT id FROM brands WHERE id = ? AND is_active = 1 LIMIT 1');
+    $stmt->bind_param('i', $brandId);
+    $stmt->execute();
+    $brandOK = $stmt->get_result()->num_rows > 0;
+    $stmt->close();
+    if (!$brandOK) {
+        header('Location: admin_produk.php?status=gagal&pesan=' . urlencode('Merek tidak ditemukan atau sedang nonaktif.'));
+        exit;
+    }
+
+    $stmt = $koneksi->prepare('SELECT id FROM categories WHERE id = ? LIMIT 1');
+    foreach ($kategoriIds as $kid) {
+        $stmt->bind_param('i', $kid);
+        $stmt->execute();
+        if ($stmt->get_result()->num_rows === 0) {
+            $stmt->close();
+            header('Location: admin_produk.php?status=gagal&pesan=' . urlencode('Salah satu kategori tidak ditemukan.'));
+            exit;
+        }
+    }
+    $stmt->close();
+
+    $stmt = $koneksi->prepare('SELECT id, kode_sku, gambar FROM products WHERE id = ? AND parent_id IS NULL LIMIT 1');
+    $stmt->bind_param('i', $parentId);
+    $stmt->execute();
+    $parentResult = $stmt->get_result();
+    if ($parentResult->num_rows === 0) {
+        $stmt->close();
+        header('Location: admin_produk.php?status=gagal_edit&pesan=' . urlencode('Produk induk tidak ditemukan.'));
+        exit;
+    }
+    $parentOld = $parentResult->fetch_assoc();
+    $stmt->close();
+
+    $stmt = $koneksi->prepare('SELECT id, gambar, kode_sku FROM products WHERE parent_id = ?');
+    $stmt->bind_param('i', $parentId);
+    $stmt->execute();
+    $existingVariants = [];
+    $rsExisting = $stmt->get_result();
+    while ($old = $rsExisting->fetch_assoc()) $existingVariants[(int)$old['id']] = $old;
+    $stmt->close();
+
+    $preparedVariants = [];
+    foreach ($varianNama as $i => $nameRaw) {
+        $variantName = trim((string)$nameRaw);
+        $variantId = (int)($varianIds[$i] ?? 0);
+        $variantPrice = cleanPrice($varianHarga[$i] ?? 0);
+        $stockRaw = filter_var($varianStok[$i] ?? null, FILTER_VALIDATE_INT);
+        if ($variantName === '' || $variantPrice <= 0 || $stockRaw === false || $stockRaw < 0) {
+            header('Location: admin_produk.php?status=gagal&pesan=' . urlencode('Setiap varian harus memiliki nama, harga lebih dari 0, dan stok minimal 0.'));
+            exit;
+        }
+        if ($variantId > 0 && !isset($existingVariants[$variantId])) {
+            header('Location: admin_produk.php?status=gagal&pesan=' . urlencode('ID varian tidak cocok dengan produk induk.'));
+            exit;
+        }
+        $preparedVariants[] = [
+            'id' => $variantId,
+            'nama' => $variantName,
+            'harga' => (float)$variantPrice,
+            'stok' => (int)$stockRaw,
+            'gambar' => $variantId > 0 ? (string)($existingVariants[$variantId]['gambar'] ?? '') : '',
+            'source_index' => $i,
+        ];
+    }
+
+    $uploadedFiles = [];
+    foreach ($preparedVariants as &$v) {
+        $i = $v['source_index'];
+        $uploadErr = $_FILES['paket_edit_gambar']['error'][$i] ?? UPLOAD_ERR_NO_FILE;
+        if ($uploadErr === UPLOAD_ERR_NO_FILE) continue;
+        if ($uploadErr !== UPLOAD_ERR_OK) {
+            unset($v);
+            header('Location: admin_produk.php?status=gagal&pesan=' . urlencode('Gagal membaca salah satu gambar varian.'));
+            exit;
+        }
+        $tmp = $_FILES['paket_edit_gambar']['tmp_name'][$i] ?? '';
+        $ext = strtolower(pathinfo((string)($_FILES['paket_edit_gambar']['name'][$i] ?? ''), PATHINFO_EXTENSION));
+        $size = (int)($_FILES['paket_edit_gambar']['size'][$i] ?? 0);
+        $mime = $tmp !== '' && function_exists('mime_content_type') ? mime_content_type($tmp) : '';
+        if (!in_array($ext, ['jpg', 'jpeg', 'png'], true) || $size > 5 * 1024 * 1024 || !in_array($mime, ['image/jpeg', 'image/png'], true)) {
+            unset($v);
+            foreach ($uploadedFiles as $f) if (is_file('uploads/' . $f)) @unlink('uploads/' . $f);
+            header('Location: admin_produk.php?status=gagal&pesan=' . urlencode('Gambar varian harus JPG/PNG yang valid dan maksimal 5 MB.'));
+            exit;
+        }
+        if (!is_dir('uploads') && !mkdir('uploads', 0755, true) && !is_dir('uploads')) {
+            unset($v);
+            foreach ($uploadedFiles as $f) if (is_file('uploads/' . $f)) @unlink('uploads/' . $f);
+            header('Location: admin_produk.php?status=gagal&pesan=' . urlencode('Folder uploads tidak dapat dibuat.'));
+            exit;
+        }
+        $newImage = 'varian_' . bin2hex(random_bytes(8)) . '.' . $ext;
+        if (!move_uploaded_file($tmp, 'uploads/' . $newImage)) {
+            unset($v);
+            foreach ($uploadedFiles as $f) if (is_file('uploads/' . $f)) @unlink('uploads/' . $f);
+            header('Location: admin_produk.php?status=gagal&pesan=' . urlencode('Gagal menyimpan salah satu gambar varian.'));
+            exit;
+        }
+        $v['gambar'] = $newImage;
+        $uploadedFiles[] = $newImage;
+    }
+    unset($v);
+
+    $kategoriUtama = (int)$kategoriIds[0];
+    $koneksi->begin_transaction();
+    try {
+        $sumStock = array_sum(array_column($preparedVariants, 'stok'));
+        $cheapest = $preparedVariants[0];
+        foreach ($preparedVariants as $v) if ($v['harga'] < $cheapest['harga']) $cheapest = $v;
+        $catalogImage = (string)$cheapest['gambar'];
+        if ($catalogImage === '') {
+            foreach ($preparedVariants as $v) if ($v['gambar'] !== '') { $catalogImage = $v['gambar']; break; }
+        }
+        if ($catalogImage === '') $catalogImage = (string)($parentOld['gambar'] ?? '');
+        $catalogPrice = (float)$cheapest['harga'];
+
+        $stmt = $koneksi->prepare('UPDATE products SET category_id = ?, brand_id = ?, nama_produk = ?, deskripsi = ?, spesifikasi = ?, harga = ?, harga_pemasangan = NULL, stok = ?, gambar = ?, is_featured = ? WHERE id = ? AND parent_id IS NULL');
+        $stmt->bind_param('iisssdisii', $kategoriUtama, $brandId, $namaInduk, $deskripsi, $spesifikasi, $catalogPrice, $sumStock, $catalogImage, $isFeatured, $parentId);
+        if (!$stmt->execute()) throw new Exception('Gagal memperbarui produk induk: ' . $stmt->error);
+        $stmt->close();
+
+        $keepIds = [];
+        $stmtUpdate = $koneksi->prepare('UPDATE products SET category_id = ?, brand_id = ?, nama_produk = ?, deskripsi = ?, spesifikasi = ?, harga = ?, harga_pemasangan = NULL, stok = ?, gambar = ?, is_active = 1, is_featured = 0 WHERE id = ? AND parent_id = ?');
+        $stmtInsert = $koneksi->prepare('INSERT INTO products (category_id, brand_id, kode_sku, nama_produk, deskripsi, spesifikasi, harga, harga_pemasangan, stok, gambar, is_active, is_featured, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, 0, ?)');
+        foreach ($preparedVariants as $v) {
+            if ($v['id'] > 0) {
+                $idVarian = (int)$v['id'];
+                $stmtUpdate->bind_param('iisssdisii', $kategoriUtama, $brandId, $v['nama'], $deskripsi, $spesifikasi, $v['harga'], $v['stok'], $v['gambar'], $idVarian, $parentId);
+                if (!$stmtUpdate->execute()) throw new Exception('Gagal memperbarui varian ' . $v['nama'] . ': ' . $stmtUpdate->error);
+                $keepIds[] = $idVarian;
+            } else {
+                $skuVarian = 'SKU-PKT-' . date('YmdHis') . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 4));
+                $stmtInsert->bind_param('iissssdisi', $kategoriUtama, $brandId, $skuVarian, $v['nama'], $deskripsi, $spesifikasi, $v['harga'], $v['stok'], $v['gambar'], $parentId);
+                if (!$stmtInsert->execute()) throw new Exception('Gagal menambahkan varian ' . $v['nama'] . ': ' . $stmtInsert->error);
+                $keepIds[] = (int)$stmtInsert->insert_id;
+            }
+        }
+        $stmtUpdate->close();
+        $stmtInsert->close();
+
+        $stmtDeactivate = $koneksi->prepare('UPDATE products SET is_active = 0 WHERE id = ? AND parent_id = ?');
+        foreach ($existingVariants as $oldId => $_old) {
+            if (!in_array((int)$oldId, $keepIds, true)) {
+                $oldIdInt = (int)$oldId;
+                $stmtDeactivate->bind_param('ii', $oldIdInt, $parentId);
+                if (!$stmtDeactivate->execute()) throw new Exception('Gagal menonaktifkan varian yang dihapus: ' . $stmtDeactivate->error);
+            }
+        }
+        $stmtDeactivate->close();
+
+        $stmtDeleteCats = $koneksi->prepare('DELETE FROM product_categories WHERE product_id = ?');
+        $stmtInsertCat = $koneksi->prepare('INSERT INTO product_categories (product_id, category_id) VALUES (?, ?)');
+        foreach (array_merge([$parentId], $keepIds) as $pid) {
+            $stmtDeleteCats->bind_param('i', $pid);
+            if (!$stmtDeleteCats->execute()) throw new Exception('Gagal memperbarui kategori produk: ' . $stmtDeleteCats->error);
+            foreach ($kategoriIds as $kid) {
+                $stmtInsertCat->bind_param('ii', $pid, $kid);
+                if (!$stmtInsertCat->execute()) throw new Exception('Gagal menyimpan kategori produk: ' . $stmtInsertCat->error);
+            }
+        }
+        $stmtDeleteCats->close();
+        $stmtInsertCat->close();
+
+        $koneksi->commit();
+        header('Location: admin_produk.php?status=sukses_edit');
+        exit;
+    } catch (Throwable $e) {
+        $koneksi->rollback();
+        foreach ($uploadedFiles as $file) if (is_file('uploads/' . $file)) @unlink('uploads/' . $file);
+        header('Location: admin_produk.php?status=gagal_edit&pesan=' . urlencode('Perubahan produk/varian gagal disimpan. ' . $e->getMessage()));
+        exit;
+    }
+}
+
+
+// ======================================================
+// PROSES TAMBAH / EDIT PRODUK STANDAR ASLI
 // ======================================================
 
 if (
@@ -357,10 +810,6 @@ if (
         );
 
 
-    // ==================================================
-    // DATA DASAR
-    // ==================================================
-
     $nama =
         trim(
             $_POST['nama_produk'] ?? ''
@@ -369,6 +818,11 @@ if (
     $deskripsi =
         trim(
             $_POST['deskripsi'] ?? ''
+        );
+        
+    $spesifikasi =
+        trim(
+            $_POST['spesifikasi'] ?? ''
         );
 
     $brand_id =
@@ -408,10 +862,6 @@ if (
             : 0;
 
 
-    // ==================================================
-    // KATEGORI
-    // ==================================================
-
     $kategori_ids =
         $_POST['kategori_id'] ?? [];
 
@@ -445,10 +895,6 @@ if (
             )
         );
 
-
-    // ==================================================
-    // VALIDASI
-    // ==================================================
 
     $error = '';
 
@@ -522,10 +968,6 @@ if (
     }
 
 
-    // ==================================================
-    // CEK KATEGORI
-    // ==================================================
-
     if ($error === '') {
 
         $stmt =
@@ -566,10 +1008,6 @@ if (
     }
 
 
-    // ==================================================
-    // CEK BRAND
-    // ==================================================
-
     if ($error === '') {
 
         $stmt =
@@ -602,10 +1040,6 @@ if (
         $stmt->close();
     }
 
-
-    // ==================================================
-    // DATA GAMBAR
-    // ==================================================
 
     $gambar_lama = '';
 
@@ -651,10 +1085,6 @@ if (
         $stmt->close();
     }
 
-
-    // ==================================================
-    // UPLOAD GAMBAR
-    // ==================================================
 
     $nama_file_baru = '';
     $file_baru_path = '';
@@ -779,10 +1209,6 @@ if (
     }
 
 
-    // ==================================================
-    // JIKA ADA ERROR
-    // ==================================================
-
     if ($error !== '') {
 
         $status =
@@ -801,21 +1227,12 @@ if (
     }
 
 
-    // ==================================================
-    // SIMPAN KE DATABASE
-    // ==================================================
-
     $koneksi->begin_transaction();
 
     try {
 
-        // ==================================================
-        // EDIT
-        // ==================================================
-
         if ($mode_edit) {
 
-            // Ambil SKU lama
             $stmt =
                 $koneksi->prepare("
                     SELECT
@@ -867,12 +1284,11 @@ if (
             }
 
 
-            // Kategori utama
             $kategori_utama =
                 $kategori_ids[0];
 
 
-            // Update products
+            // UPDATE PRODUK STANDAR (Tipe data: iisssddisii -> 11 parameter)
             $stmt =
                 $koneksi->prepare("
                     UPDATE products
@@ -881,6 +1297,7 @@ if (
                         brand_id = ?,
                         nama_produk = ?,
                         deskripsi = ?,
+                        spesifikasi = ?,
                         harga = ?,
                         harga_pemasangan = ?,
                         stok = ?,
@@ -890,11 +1307,12 @@ if (
                 ");
 
             $stmt->bind_param(
-                "iissddisii",
+                "iisssddisii",
                 $kategori_utama,
                 $brand_id,
                 $nama,
                 $deskripsi,
+                $spesifikasi,
                 $harga,
                 $harga_pemasangan,
                 $stok,
@@ -916,7 +1334,6 @@ if (
             $stmt->close();
 
 
-            // Hapus kategori lama
             $stmt =
                 $koneksi->prepare("
                     DELETE FROM product_categories
@@ -940,7 +1357,6 @@ if (
             $stmt->close();
 
 
-            // Masukkan kategori baru
             $stmt =
                 $koneksi->prepare("
                     INSERT INTO product_categories
@@ -975,11 +1391,9 @@ if (
             $stmt->close();
 
 
-            // Commit
             $koneksi->commit();
 
 
-            // Hapus gambar lama setelah database berhasil
             if (
                 $nama_file_baru !== '' &&
                 !empty($produk_lama['gambar'])
@@ -1008,20 +1422,11 @@ if (
 
             exit;
 
-        }
-
-
-        // ==================================================
-        // TAMBAH
-        // ==================================================
-
-        else {
+        } else {
 
             $kategori_utama =
                 $kategori_ids[0];
 
-
-            // Generate SKU
             $sku =
                 'SKU-' .
                 date('YmdHis') .
@@ -1037,7 +1442,6 @@ if (
                 );
 
 
-            // Insert product
             $stmt =
                 $koneksi->prepare("
                     INSERT INTO products
@@ -1047,6 +1451,7 @@ if (
                         kode_sku,
                         nama_produk,
                         deskripsi,
+                        spesifikasi,
                         harga,
                         harga_pemasangan,
                         stok,
@@ -1065,6 +1470,7 @@ if (
                         ?,
                         ?,
                         ?,
+                        ?,
                         1,
                         ?
                     )
@@ -1072,12 +1478,13 @@ if (
 
 
             $stmt->bind_param(
-                "iisssddisi",
+                "iissssddisi",
                 $kategori_utama,
                 $brand_id,
                 $sku,
                 $nama,
                 $deskripsi,
+                $spesifikasi,
                 $harga,
                 $harga_pemasangan,
                 $stok,
@@ -1102,7 +1509,6 @@ if (
             $stmt->close();
 
 
-            // Simpan kategori
             $stmt =
                 $koneksi->prepare("
                     INSERT INTO product_categories
@@ -1138,7 +1544,6 @@ if (
             $stmt->close();
 
 
-            // Commit
             $koneksi->commit();
 
 
@@ -1153,8 +1558,6 @@ if (
 
         $koneksi->rollback();
 
-
-        // Hapus file baru jika database gagal
         if (
             $file_baru_path !== '' &&
             file_exists($file_baru_path)
@@ -1308,13 +1711,13 @@ $sql = "
         ON p.brand_id = b.id
 
     WHERE 1=1
+        AND p.parent_id IS NULL
 ";
 
 $params = [];
 $types = "";
 
 
-// Search
 if (
     $search !== ''
 ) {
@@ -1362,7 +1765,6 @@ if (
 }
 
 
-// Filter kategori
 if (
     $filter_kategori > 0
 ) {
@@ -1384,7 +1786,6 @@ if (
 }
 
 
-// Filter merek
 if (
     $filter_merek > 0
 ) {
@@ -1442,10 +1843,6 @@ $query_produk =
     $stmt_produk->get_result();
 
 
-// ======================================================
-// KATEGORI
-// ======================================================
-
 $query_kategori =
     $koneksi->query("
         SELECT
@@ -1456,10 +1853,6 @@ $query_kategori =
         ORDER BY nama_kategori ASC
     ");
 
-
-// ======================================================
-// MEREK
-// ======================================================
 
 $query_merek =
     $koneksi->query("
@@ -1473,10 +1866,6 @@ $query_merek =
     ");
 
 
-// ======================================================
-// HITUNG PRODUK UNGGULAN
-// ======================================================
-
 $total_featured =
     $koneksi->query("
         SELECT COUNT(id) AS total
@@ -1485,10 +1874,6 @@ $total_featured =
         AND is_featured = 1
     ")->fetch_assoc()['total'] ?? 0;
 
-
-// ======================================================
-// DATA UNTUK MODAL
-// ======================================================
 
 $merek_modal =
     $koneksi->query("
@@ -1704,7 +2089,7 @@ $kategori_modal =
 
 
     <!-- ==================================================
-         FILTER
+         FILTER & TOMBOL UTAMA
     ================================================== -->
 
     <form
@@ -1734,8 +2119,6 @@ $kategori_modal =
 
 
             <div class="flex flex-wrap gap-2 w-full md:w-auto">
-
-                <!-- KATEGORI -->
 
                 <select
                     name="kategori"
@@ -1769,8 +2152,6 @@ $kategori_modal =
 
                 </select>
 
-
-                <!-- MEREK -->
 
                 <select
                     name="merek"
@@ -1824,18 +2205,25 @@ $kategori_modal =
                 <?php endif; ?>
 
 
-                <!-- TAMBAH -->
-
                 <button
                     type="button"
                     onclick="openTambahModal()"
-                    class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2"
+                    class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2"
                 >
 
                     <i class="fa-solid fa-plus"></i>
 
                     Tambah Produk
 
+                </button>
+
+                <button
+                    type="button"
+                    onclick="openModalPaketCCTV()"
+                    class="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2 shadow"
+                >
+                    <i class="fa-solid fa-boxes-stacked"></i>
+                    Tambah Paket CCTV
                 </button>
 
             </div>
@@ -1857,53 +2245,18 @@ $kategori_modal =
 
                 <tr class="bg-gray-50 border-b border-gray-200 text-xs text-gray-500 uppercase tracking-wider">
 
-                    <th class="px-6 py-4">
-                        ID
-                    </th>
-
-                    <th class="px-6 py-4">
-                        GAMBAR
-                    </th>
-
-                    <th class="px-6 py-4">
-                        PRODUK
-                    </th>
-
-                    <th class="px-6 py-4">
-                        SKU
-                    </th>
-
-                    <th class="px-6 py-4">
-                        KATEGORI
-                    </th>
-
-                    <th class="px-6 py-4">
-                        MEREK
-                    </th>
-
-                    <th class="px-6 py-4">
-                        HARGA 
-                    </th>
-
-                    <th class="px-6 py-4">
-                        HARGA + PASANG
-                    </th>
-
-                    <th class="px-6 py-4 text-center">
-                        STOK
-                    </th>
-
-                    <th class="px-6 py-4 text-center">
-                        PAKET CCTV
-                    </th>
-
-                    <th class="px-6 py-4 text-center">
-                        STATUS
-                    </th>
-
-                    <th class="px-6 py-4 text-center">
-                        AKSI
-                    </th>
+                    <th class="px-6 py-4">ID</th>
+                    <th class="px-6 py-4">GAMBAR</th>
+                    <th class="px-6 py-4">PRODUK</th>
+                    <th class="px-6 py-4">SKU</th>
+                    <th class="px-6 py-4">KATEGORI</th>
+                    <th class="px-6 py-4">MEREK</th>
+                    <th class="px-6 py-4">HARGA</th>
+                    <th class="px-6 py-4">HARGA + PASANG</th>
+                    <th class="px-6 py-4 text-center">STOK</th>
+                    <th class="px-6 py-4 text-center">PAKET CCTV</th>
+                    <th class="px-6 py-4 text-center">STATUS</th>
+                    <th class="px-6 py-4 text-center">AKSI</th>
 
                 </tr>
 
@@ -1964,14 +2317,10 @@ $kategori_modal =
                             class="hover:bg-gray-50 transition"
                         >
 
-                            <!-- ID -->
-
                             <td class="px-6 py-4 text-gray-500">
                                 #<?= (int)$row['id'] ?>
                             </td>
 
-
-                            <!-- GAMBAR -->
 
                             <td class="px-6 py-4">
 
@@ -2002,8 +2351,6 @@ $kategori_modal =
                             </td>
 
 
-                            <!-- PRODUK -->
-
                             <td class="px-6 py-4">
 
                                 <div class="font-bold text-gray-900">
@@ -2028,8 +2375,6 @@ $kategori_modal =
                             </td>
 
 
-                            <!-- SKU -->
-
                             <td class="px-6 py-4">
 
                                 <span class="font-mono text-xs text-gray-600">
@@ -2042,8 +2387,6 @@ $kategori_modal =
 
                             </td>
 
-
-                            <!-- KATEGORI -->
 
                             <td class="px-6 py-4">
 
@@ -2081,8 +2424,6 @@ $kategori_modal =
                             </td>
 
 
-                            <!-- MEREK -->
-
                             <td class="px-6 py-4">
 
                                 <span class="inline-flex bg-purple-50 text-purple-700 border border-purple-100 px-2.5 py-1 rounded-md text-xs font-medium">
@@ -2097,8 +2438,6 @@ $kategori_modal =
                             </td>
 
 
-                            <!-- HARGA -->
-
                             <td class="px-6 py-4 font-medium">
 
                                 <?= rupiah(
@@ -2107,8 +2446,6 @@ $kategori_modal =
 
                             </td>
 
-
-                            <!-- HARGA PASANG -->
 
                             <td class="px-6 py-4 font-medium text-blue-700">
 
@@ -2130,8 +2467,6 @@ $kategori_modal =
 
                             </td>
 
-
-                            <!-- STOK -->
 
                             <td class="px-6 py-4 text-center">
 
@@ -2165,8 +2500,6 @@ $kategori_modal =
 
                             </td>
 
-
-                            <!-- FEATURED -->
 
                             <td class="px-6 py-4 text-center">
 
@@ -2205,8 +2538,6 @@ $kategori_modal =
                             </td>
 
 
-                            <!-- STATUS -->
-
                             <td class="px-6 py-4 text-center">
 
                                 <?php if (
@@ -2231,8 +2562,6 @@ $kategori_modal =
 
                             </td>
 
-
-                            <!-- AKSI -->
 
                             <td class="px-6 py-4 text-center whitespace-nowrap">
 
@@ -2265,8 +2594,6 @@ $kategori_modal =
 
                     <?php endwhile; ?>
 
-
-                    <!-- HASIL LIVE SEARCH -->
 
                     <tr
                         id="barisTidakDitemukan"
@@ -2324,7 +2651,7 @@ $kategori_modal =
 
 
 <!-- ======================================================
-     MODAL TAMBAH / EDIT PRODUK
+     MODAL TAMBAH / EDIT PRODUK STANDAR ASLI
 ====================================================== -->
 
 <div
@@ -2336,8 +2663,6 @@ $kategori_modal =
         id="modalProdukContent"
         class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[94vh] overflow-y-auto transform scale-95 transition-transform duration-200"
     >
-
-        <!-- HEADER MODAL -->
 
         <div class="sticky top-0 bg-white z-10 flex items-center justify-between px-6 py-4 border-b border-gray-100">
 
@@ -2373,8 +2698,6 @@ $kategori_modal =
         </div>
 
 
-        <!-- FORM -->
-
         <form
             id="formProduk"
             action="admin_produk.php"
@@ -2390,9 +2713,6 @@ $kategori_modal =
                 value=""
             >
 
-
-            <!-- PENANDA MODE -->
-
             <input
                 type="hidden"
                 name="simpan_produk"
@@ -2406,28 +2726,28 @@ $kategori_modal =
                 id="inputModeEdit"
                 value=""
             >
+            <input type="hidden" name="edit_paket_cctv" id="inputModeEditPaket" value="">
 
+            <div id="panelEditPaketCCTV" class="hidden mb-6 border border-amber-200 bg-amber-50/50 rounded-xl p-4">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                    <div>
+                        <h4 class="font-bold text-gray-900"><i class="fa-solid fa-layer-group text-amber-500 mr-2"></i>Varian produk ini</h4>
+                        <p class="text-xs text-gray-600 mt-1">Contoh: EZVIZ 3MP memiliki varian 4 Channel dan 8 Channel. Semua varian bisa diedit sekaligus di sini.</p>
+                    </div>
+                    <button type="button" onclick="tambahRowEditVarian()" class="shrink-0 px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-sm font-semibold"><i class="fa-solid fa-plus mr-1"></i>Tambah Varian</button>
+                </div>
+                <div id="containerEditPaketVarian" class="space-y-3"></div>
+                <p class="text-xs text-gray-500 mt-3">Varian yang dihapus dari formulir akan dinonaktifkan, bukan dihapus permanen dari database.</p>
+            </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
 
-
-                <!-- ==================================================
-                     KOLOM KIRI
-                ================================================== -->
-
                 <div class="space-y-5">
-
-
-                    <!-- NAMA -->
 
                     <div>
 
                         <label class="block text-sm font-medium text-gray-700 mb-1">
-
-                            Nama Produk
-
-                            <span class="text-red-500">*</span>
-
+                            Nama Produk <span class="text-red-500">*</span>
                         </label>
 
                         <input
@@ -2443,14 +2763,10 @@ $kategori_modal =
                     </div>
 
 
-                    <!-- SKU -->
-
                     <div>
 
                         <label class="block text-sm font-medium text-gray-700 mb-1">
-
                             SKU
-
                         </label>
 
                         <input
@@ -2471,22 +2787,14 @@ $kategori_modal =
                     </div>
 
 
-                    <!-- KATEGORI -->
-
                     <div>
 
                         <label class="block text-sm font-medium text-gray-700 mb-1">
-
-                            Kategori
-
-                            <span class="text-red-500">*</span>
-
+                            Kategori <span class="text-red-500">*</span>
                         </label>
 
                         <p class="text-xs text-gray-400 mb-2">
-
                             Produk dapat memiliki lebih dari satu kategori.
-
                         </p>
 
 
@@ -2494,10 +2802,10 @@ $kategori_modal =
 
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-1">
 
-                                <?php while (
-                                    $kat =
-                                    $kategori_modal->fetch_assoc()
-                                ): ?>
+                                <?php 
+                                $kategori_modal->data_seek(0);
+                                while ($kat = $kategori_modal->fetch_assoc()): 
+                                ?>
 
                                     <label class="flex items-center gap-2 p-2 rounded-lg hover:bg-white cursor-pointer">
 
@@ -2509,11 +2817,7 @@ $kategori_modal =
                                         >
 
                                         <span class="text-sm text-gray-700">
-
-                                            <?= htmlspecialchars(
-                                                $kat['nama_kategori']
-                                            ) ?>
-
+                                            <?= htmlspecialchars($kat['nama_kategori']) ?>
                                         </span>
 
                                     </label>
@@ -2535,16 +2839,10 @@ $kategori_modal =
                     </div>
 
 
-                    <!-- MEREK -->
-
                     <div>
 
                         <label class="block text-sm font-medium text-gray-700 mb-1">
-
-                            Merek
-
-                            <span class="text-red-500">*</span>
-
+                            Merek <span class="text-red-500">*</span>
                         </label>
 
 
@@ -2562,19 +2860,15 @@ $kategori_modal =
                                 </option>
 
 
-                                <?php while (
-                                    $brand =
-                                    $merek_modal->fetch_assoc()
-                                ): ?>
+                                <?php 
+                                $merek_modal->data_seek(0);
+                                while ($brand = $merek_modal->fetch_assoc()): 
+                                ?>
 
                                     <option
                                         value="<?= (int)$brand['id'] ?>"
                                     >
-
-                                        <?= htmlspecialchars(
-                                            $brand['nama_merek']
-                                        ) ?>
-
+                                        <?= htmlspecialchars($brand['nama_merek']) ?>
                                     </option>
 
                                 <?php endwhile; ?>
@@ -2598,16 +2892,10 @@ $kategori_modal =
                     </div>
 
 
-                    <!-- HARGA CCTV -->
-
-                    <div>
+                    <div id="fieldHargaProduk">
 
                         <label class="block text-sm font-medium text-gray-700 mb-1">
-
-                            Harga 
-
-                            <span class="text-red-500">*</span>
-
+                            Harga <span class="text-red-500">*</span>
                         </label>
 
 
@@ -2633,9 +2921,7 @@ $kategori_modal =
                     </div>
 
 
-                    <!-- HARGA PASANG -->
-
-                    <div>
+                    <div id="fieldPemasanganProduk">
 
                         <div class="flex items-center justify-between mb-2">
 
@@ -2688,16 +2974,10 @@ $kategori_modal =
                     </div>
 
 
-                    <!-- STOK -->
-
-                    <div>
+                    <div id="fieldStokProduk">
 
                         <label class="block text-sm font-medium text-gray-700 mb-1">
-
-                            Stok
-
-                            <span class="text-red-500">*</span>
-
+                            Stok <span class="text-red-500">*</span>
                         </label>
 
                         <input
@@ -2712,8 +2992,6 @@ $kategori_modal =
 
                     </div>
 
-
-                    <!-- FEATURED -->
 
                     <div class="bg-yellow-50 border border-yellow-200 rounded-xl p-4">
 
@@ -2730,17 +3008,11 @@ $kategori_modal =
                             <div>
 
                                 <div class="font-semibold text-yellow-800">
-
-                                    <i class="fa-solid fa-star mr-1"></i>
-
-                                    Paket CCTV
-
+                                    <i class="fa-solid fa-star mr-1"></i> Paket CCTV
                                 </div>
 
                                 <p class="text-xs text-yellow-700 mt-1">
-
                                     Tampilkan produk sebagai Paket CCTV.
-
                                 </p>
 
                             </div>
@@ -2752,28 +3024,12 @@ $kategori_modal =
                 </div>
 
 
-                <!-- ==================================================
-                     KOLOM KANAN
-                ================================================== -->
-
                 <div class="space-y-5">
 
-
-                    <!-- GAMBAR -->
-
-                    <div>
+                    <div id="fieldGambarProduk">
 
                         <label class="block text-sm font-medium text-gray-700 mb-1">
-
-                            Gambar Produk
-
-                            <span
-                                id="wajibGambar"
-                                class="text-red-500"
-                            >
-                                *
-                            </span>
-
+                            Gambar Produk <span id="wajibGambar" class="text-red-500">*</span>
                         </label>
 
 
@@ -2829,28 +3085,38 @@ $kategori_modal =
                     </div>
 
 
-                    <!-- DESKRIPSI -->
-
                     <div>
 
                         <label class="block text-sm font-medium text-gray-700 mb-1">
-
                             Deskripsi
-
                         </label>
 
                         <textarea
                             name="deskripsi"
                             id="deskripsi"
-                            rows="8"
+                            rows="4"
                             class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm resize-none focus:outline-none focus:border-blue-500"
-                            placeholder="Masukkan spesifikasi dan deskripsi produk..."
+                            placeholder="Masukkan rincian isi paket dan deskripsi produk..."
+                        ></textarea>
+
+                    </div>
+                    
+                    <div>
+
+                        <label class="block text-sm font-medium text-gray-700 mb-1">
+                            Spesifikasi CCTV <span class="text-xs text-gray-500 font-normal">(Opsional)</span>
+                        </label>
+
+                        <textarea
+                            name="spesifikasi"
+                            id="spesifikasi"
+                            rows="4"
+                            class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm resize-none focus:outline-none focus:border-blue-500"
+                            placeholder="Contoh: Lensa 4mm, Jarak IR 20m, Sensor CMOS, Resolusi 1080p..."
                         ></textarea>
 
                     </div>
 
-
-                    <!-- INFO -->
 
                     <div class="bg-blue-50 border border-blue-100 rounded-xl p-4">
 
@@ -2860,25 +3126,11 @@ $kategori_modal =
 
                             <div class="text-xs text-blue-700">
 
-                                <p class="font-semibold mb-1">
-                                    Informasi
-                                </p>
-
-                                <p>
-                                    Harga CCTV adalah harga perangkat.
-                                </p>
-
-                                <p class="mt-1">
-                                    Harga + Pemasangan adalah harga perangkat yang sudah termasuk jasa pemasangan teknisi.
-                                </p>
-
-                                <p class="mt-1">
-                                    Produk yang tidak membutuhkan teknisi tidak perlu mengisi harga pemasangan.
-                                </p>
-
-                                <p class="mt-1">
-                                    Satu produk dapat memiliki beberapa kategori.
-                                </p>
+                                <p class="font-semibold mb-1">Informasi</p>
+                                <p>Harga CCTV adalah harga perangkat.</p>
+                                <p class="mt-1">Harga + Pemasangan adalah harga perangkat yang sudah termasuk jasa pemasangan teknisi.</p>
+                                <p class="mt-1">Produk yang tidak membutuhkan teknisi tidak perlu mengisi harga pemasangan.</p>
+                                <p class="mt-1">Satu produk dapat memiliki beberapa kategori.</p>
 
                             </div>
 
@@ -2891,8 +3143,6 @@ $kategori_modal =
             </div>
 
 
-            <!-- FOOTER -->
-
             <div class="sticky bottom-0 bg-white mt-8 pt-4 border-t border-gray-100 flex justify-end gap-3">
 
                 <button
@@ -2900,9 +3150,7 @@ $kategori_modal =
                     onclick="closeProdukModal()"
                     class="px-5 py-2.5 text-sm font-medium border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
                 >
-
                     Batal
-
                 </button>
 
 
@@ -2912,15 +3160,306 @@ $kategori_modal =
                     class="px-5 py-2.5 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center gap-2"
                 >
 
-                    <i
-                        id="iconSimpan"
-                        class="fa-regular fa-floppy-disk"
-                    ></i>
+                    <i id="iconSimpan" class="fa-regular fa-floppy-disk"></i>
+                    <span id="textSimpan">Simpan Produk</span>
 
-                    <span id="textSimpan">
-                        Simpan Produk
-                    </span>
+                </button>
 
+            </div>
+
+        </form>
+
+    </div>
+
+</div>
+
+
+<!-- ======================================================
+     MODAL KHUSUS TAMBAH PAKET CCTV
+====================================================== -->
+
+<div
+    id="modalPaketCCTV"
+    class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm opacity-0 transition-opacity"
+>
+
+    <div
+        id="modalPaketContent"
+        class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[94vh] overflow-y-auto transform scale-95 transition-transform"
+    >
+
+        <div class="sticky top-0 bg-white z-10 flex items-center justify-between px-6 py-4 border-b">
+
+            <div>
+
+                <h3 class="text-lg font-bold text-gray-900 flex items-center gap-2">
+                    <i class="fa-solid fa-boxes-stacked text-amber-500"></i> Tambah Paket CCTV & Variannya
+                </h3>
+
+                <p class="text-xs text-gray-500 mt-1">
+                    Nama induk untuk katalog dan satu atau lebih varian yang masing-masing memiliki nama, harga, stok, serta foto.
+                </p>
+
+            </div>
+
+
+            <button
+                type="button"
+                onclick="closeModalPaketCCTV()"
+                class="w-9 h-9 rounded-lg hover:bg-gray-100 text-gray-400"
+            >
+
+                <i class="fa-solid fa-xmark text-xl"></i>
+
+            </button>
+
+        </div>
+
+
+        <form
+            action="admin_produk.php"
+            method="POST"
+            enctype="multipart/form-data"
+            class="p-6 space-y-6"
+        >
+
+            <input type="hidden" name="simpan_paket_cctv" value="1">
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+                <div>
+
+                    <label class="block text-xs font-bold text-gray-700 uppercase mb-1">
+                        Nama Paket / Produk Induk <span class="text-red-500">*</span>
+                    </label>
+
+                    <input
+                        type="text"
+                        name="nama_paket"
+                        required
+                        placeholder="Contoh: Paket CCTV EZVIZ H6C Two-Way Talk"
+                        class="w-full border rounded-xl px-3 py-2 text-sm"
+                    >
+
+                </div>
+
+
+                <div>
+
+                    <label class="block text-xs font-bold text-gray-700 uppercase mb-1">
+                        Merek CCTV <span class="text-red-500">*</span>
+                    </label>
+
+                    <select
+                        name="brand_id"
+                        required
+                        class="w-full border rounded-xl px-3 py-2 text-sm bg-white"
+                    >
+
+                        <option value="">-- Pilih Merek --</option>
+
+                        <?php 
+                        $merek_modal->data_seek(0);
+                        while ($brand = $merek_modal->fetch_assoc()): 
+                        ?>
+
+                            <option value="<?= (int)$brand['id'] ?>">
+                                <?= htmlspecialchars($brand['nama_merek']) ?>
+                            </option>
+
+                        <?php endwhile; ?>
+
+                    </select>
+
+                </div>
+
+            </div>
+
+
+            <div>
+
+                <label class="block text-xs font-bold text-gray-700 uppercase mb-1">
+                    Kategori Paket <span class="text-red-500">*</span>
+                </label>
+
+                <div class="border rounded-xl p-3 bg-gray-50 max-h-32 overflow-y-auto grid grid-cols-2 gap-2">
+
+                    <?php 
+                    $kategori_modal->data_seek(0);
+                    while ($kat = $kategori_modal->fetch_assoc()): 
+                    ?>
+
+                        <label class="flex items-center gap-2 text-xs cursor-pointer">
+
+                            <input
+                                type="checkbox"
+                                name="kategori_id[]"
+                                value="<?= (int)$kat['id'] ?>"
+                                class="accent-amber-500"
+                            >
+
+                            <?= htmlspecialchars($kat['nama_kategori']) ?>
+
+                        </label>
+
+                    <?php endwhile; ?>
+
+                </div>
+
+            </div>
+
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+                <div>
+
+                    <label class="block text-xs font-bold text-gray-700 uppercase mb-1">
+                        Deskripsi Paket
+                    </label>
+
+                    <textarea
+                        name="deskripsi"
+                        rows="3"
+                        placeholder="Tulis deskripsi paket CCTV di sini..."
+                        class="w-full border rounded-xl px-3 py-2 text-sm resize-none"
+                    ></textarea>
+
+                </div>
+                
+                <div>
+
+                    <label class="block text-xs font-bold text-gray-700 uppercase mb-1">
+                        Spesifikasi CCTV <span class="text-xs text-gray-500 font-normal normal-case">(Opsional)</span>
+                    </label>
+
+                    <textarea
+                        name="spesifikasi"
+                        rows="3"
+                        placeholder="Contoh: Lensa 4mm, 1080p, dll..."
+                        class="w-full border rounded-xl px-3 py-2 text-sm resize-none"
+                    ></textarea>
+
+                </div>
+
+            </div>
+
+
+            <div class="border-t pt-4">
+
+                <div class="flex justify-between items-center mb-3">
+
+                    <label class="text-xs font-bold text-gray-900 uppercase">
+                        Pilihan Varian yang Dijual
+                    </label>
+
+                    <button
+                        type="button"
+                        onclick="tambahRowPaketVarian()"
+                        class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1"
+                    >
+
+                        <i class="fa-solid fa-plus"></i> + Tambah Channel
+
+                    </button>
+
+                </div>
+
+
+                <div id="containerPaketVarian" class="space-y-3">
+
+                    <div class="row-paket-varian bg-gray-50 p-4 rounded-xl border border-gray-200 grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+
+                        <div class="md:col-span-4">
+
+                            <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Nama Varian / Konfigurasi</label>
+
+                            <input
+                                type="text"
+                                name="paket_v_nama[]"
+                                value="Paket CCTV 4 Channel"
+                                required
+                                class="w-full border rounded-lg px-2.5 py-1.5 text-xs"
+                            >
+
+                        </div>
+
+                        <div class="md:col-span-3">
+
+                            <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Harga (Rp)</label>
+
+                            <input
+                                type="text"
+                                name="paket_v_harga[]"
+                                placeholder="2.500.000"
+                                required
+                                class="w-full border rounded-lg px-2.5 py-1.5 text-xs"
+                            >
+
+                        </div>
+
+                        <div class="md:col-span-2">
+
+                            <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Stok</label>
+
+                            <input
+                                type="number"
+                                name="paket_v_stok[]"
+                                value="10"
+                                min="0"
+                                required
+                                class="w-full border rounded-lg px-2.5 py-1.5 text-xs"
+                            >
+
+                        </div>
+
+                        <div class="md:col-span-2">
+
+                            <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Foto Varian</label>
+
+                            <input
+                                type="file"
+                                name="paket_v_gambar[]"
+                                class="w-full text-[10px] text-gray-500"
+                            >
+
+                        </div>
+
+                        <div class="md:col-span-1 text-center pt-3">
+
+                            <button
+                                type="button"
+                                onclick="hapusRowPaketVarian(this)"
+                                class="text-red-500 hover:text-red-700"
+                            >
+
+                                <i class="fa-solid fa-trash"></i>
+
+                            </button>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <div class="border-t pt-4 flex justify-end gap-3">
+
+                <button
+                    type="button"
+                    onclick="closeModalPaketCCTV()"
+                    class="px-5 py-2 text-xs font-bold border rounded-xl"
+                >
+                    Batal
+                </button>
+
+                <button
+                    type="submit"
+                    class="px-5 py-2 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white rounded-xl shadow"
+                >
+                    Simpan Paket CCTV
                 </button>
 
             </div>
@@ -2980,11 +3519,7 @@ $kategori_modal =
         >
 
             <label class="block text-sm font-medium text-gray-700 mb-2">
-
-                Nama Merek
-
-                <span class="text-red-500">*</span>
-
+                Nama Merek <span class="text-red-500">*</span>
             </label>
 
 
@@ -3024,7 +3559,6 @@ $kategori_modal =
                 >
 
                     <i class="fa-solid fa-plus"></i>
-
                     Simpan Merek
 
                 </button>
@@ -3040,1466 +3574,548 @@ $kategori_modal =
 
 <script>
 
-// ======================================================
-// ELEMENT
-// ======================================================
-
-const modalProduk =
-    document.getElementById(
-        'modalProduk'
-    );
-
-const modalProdukContent =
-    document.getElementById(
-        'modalProdukContent'
-    );
-
-const formProduk =
-    document.getElementById(
-        'formProduk'
-    );
-
-const modalBrand =
-    document.getElementById(
-        'modalBrand'
-    );
-
-const modalBrandContent =
-    document.getElementById(
-        'modalBrandContent'
-    );
-
-
-// ======================================================
-// TAMBAH MODAL
-// ======================================================
-
-function openTambahModal() {
-
-    formProduk.reset();
-
-    document.getElementById(
-        'editProductId'
-    ).value = '';
-
-    document.getElementById(
-        'inputModeTambah'
-    ).disabled = false;
-
-    document.getElementById(
-        'inputModeEdit'
-    ).disabled = true;
-
-
-    document.getElementById(
-        'judulModalProduk'
-    ).textContent =
-        'Tambah Produk Baru';
-
-
-    document.getElementById(
-        'subjudulModalProduk'
-    ).textContent =
-        'Tambahkan produk CCTV baru';
-
-
-    document.getElementById(
-        'textSimpan'
-    ).textContent =
-        'Simpan Produk';
-
-
-    document.getElementById(
-        'iconSimpan'
-    ).className =
-        'fa-regular fa-floppy-disk';
-
-
-    document.getElementById(
-        'skuProduk'
-    ).value = '';
-
-
-    document.getElementById(
-        'skuProduk'
-    ).placeholder =
-        'SKU otomatis dibuat saat disimpan';
-
-
-    document.getElementById(
-        'infoSku'
-    ).textContent =
-        'SKU dibuat otomatis oleh sistem.';
-
-
-    document.getElementById(
-        'wajibGambar'
-    ).classList.remove(
-        'hidden'
-    );
-
-
-    document.getElementById(
-        'fileUpload'
-    ).required = true;
-
-
-    resetPreview();
-
-
-    clearKategori();
-
-
-    document.getElementById(
-        'pakaiPemasangan'
-    ).checked = false;
-
-    updatePemasanganField();
-
-
-    openProdukModal();
+function openModalPaketCCTV() {
+    const m = document.getElementById('modalPaketCCTV');
+    const c = document.getElementById('modalPaketContent');
+    m.classList.remove('hidden');
+    m.classList.add('flex');
+    setTimeout(() => {
+        m.classList.remove('opacity-0');
+        c.classList.remove('scale-95');
+    }, 10);
 }
 
-
-// ======================================================
-// OPEN MODAL
-// ======================================================
-
-function openProdukModal() {
-
-    modalProduk.classList.remove(
-        'hidden'
-    );
-
-    modalProduk.classList.add(
-        'flex'
-    );
-
-
-    setTimeout(
-        function () {
-
-            modalProduk.classList.remove(
-                'opacity-0'
-            );
-
-            modalProdukContent.classList.remove(
-                'scale-95'
-            );
-
-        },
-        10
-    );
+function closeModalPaketCCTV() {
+    const m = document.getElementById('modalPaketCCTV');
+    const c = document.getElementById('modalPaketContent');
+    m.classList.add('opacity-0');
+    c.classList.add('scale-95');
+    setTimeout(() => {
+        m.classList.add('hidden');
+        m.classList.remove('flex');
+    }, 200);
 }
 
-
-// ======================================================
-// CLOSE MODAL
-// ======================================================
-
-function closeProdukModal() {
-
-    modalProduk.classList.add(
-        'opacity-0'
-    );
-
-    modalProdukContent.classList.add(
-        'scale-95'
-    );
-
-
-    setTimeout(
-        function () {
-
-            modalProduk.classList.add(
-                'hidden'
-            );
-
-            modalProduk.classList.remove(
-                'flex'
-            );
-
-        },
-        200
-    );
+function tambahRowPaketVarian() {
+    const container = document.getElementById('containerPaketVarian');
+    const html = `
+        <div class="row-paket-varian bg-gray-50 p-4 rounded-xl border border-gray-200 grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+            <div class="md:col-span-4">
+                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Nama Varian / Konfigurasi</label>
+                <input type="text" name="paket_v_nama[]" placeholder="Contoh: Paket CCTV 8 Channel atau EZVIZ H6C 2K" required class="w-full border rounded-lg px-2.5 py-1.5 text-xs">
+            </div>
+            <div class="md:col-span-3">
+                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Harga (Rp)</label>
+                <input type="text" name="paket_v_harga[]" placeholder="Harga" required class="w-full border rounded-lg px-2.5 py-1.5 text-xs">
+            </div>
+            <div class="md:col-span-2">
+                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Stok</label>
+                <input type="number" name="paket_v_stok[]" value="10" min="0" required class="w-full border rounded-lg px-2.5 py-1.5 text-xs">
+            </div>
+            <div class="md:col-span-2">
+                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Foto Varian</label>
+                <input type="file" name="paket_v_gambar[]" class="w-full text-[10px] text-gray-500">
+            </div>
+            <div class="md:col-span-1 text-center pt-3">
+                <button type="button" onclick="hapusRowPaketVarian(this)" class="text-red-500 hover:text-red-700"><i class="fa-solid fa-trash"></i></button>
+            </div>
+        </div>
+    `;
+    container.insertAdjacentHTML('beforeend', html);
 }
 
+function hapusRowPaketVarian(btn) {
+    const rows = document.querySelectorAll('.row-paket-varian');
+    if (rows.length > 1) {
+        btn.closest('.row-paket-varian').remove();
+    } else {
+        alert('Minimal harus ada 1 pilihan channel!');
+    }
+}
 
-// ======================================================
-// EDIT MODAL
-// ======================================================
+function escapeVariantHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, function (ch) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'})[ch];
+    });
+}
 
-async function openEditModal(id) {
+function renderRowEditVarian(variant = {}) {
+    const container = document.getElementById('containerEditPaketVarian');
+    if (!container) return;
+    const id = Number(variant.id || 0);
+    const nama = escapeVariantHtml(variant.nama_produk || '');
+    const harga = Number(variant.harga || 0) > 0 ? String(Math.round(Number(variant.harga))) : '';
+    const stok = Number.isFinite(Number(variant.stok)) ? Number(variant.stok) : 0;
+    const gambar = String(variant.gambar || '');
+    const imagePreview = gambar
+        ? `<img src="uploads/${encodeURIComponent(gambar)}" alt="Foto varian" class="w-16 h-16 object-contain border rounded-lg bg-white p-1">`
+        : `<div class="w-16 h-16 flex items-center justify-center border rounded-lg bg-white text-gray-300"><i class="fa-regular fa-image text-xl"></i></div>`;
+    const html = `
+        <div class="row-edit-paket-varian border border-gray-200 bg-white rounded-xl p-3" data-variant-id="${id}">
+            <input type="hidden" name="paket_edit_id[]" value="${id}">
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+                <div class="md:col-span-4">
+                    <label class="block text-[11px] font-semibold text-gray-600 mb-1">Nama varian / konfigurasi</label>
+                    <input type="text" name="paket_edit_nama[]" value="${nama}" maxlength="150" required placeholder="4 Channel / 8 Channel / EZVIZ H6C" class="w-full border rounded-lg px-3 py-2 text-sm">
+                    ${id ? `<p class="text-[10px] text-gray-400 mt-1">SKU: ${escapeVariantHtml(variant.kode_sku || '-')}</p>` : `<p class="text-[10px] text-amber-600 mt-1">Varian baru</p>`}
+                </div>
+                <div class="md:col-span-3">
+                    <label class="block text-[11px] font-semibold text-gray-600 mb-1">Harga (Rp)</label>
+                    <input type="text" inputmode="numeric" name="paket_edit_harga[]" value="${escapeVariantHtml(harga)}" required placeholder="1500000" class="w-full border rounded-lg px-3 py-2 text-sm">
+                </div>
+                <div class="md:col-span-2">
+                    <label class="block text-[11px] font-semibold text-gray-600 mb-1">Stok</label>
+                    <input type="number" name="paket_edit_stok[]" min="0" step="1" value="${stok}" required class="w-full border rounded-lg px-3 py-2 text-sm">
+                </div>
+                <div class="md:col-span-2">
+                    <label class="block text-[11px] font-semibold text-gray-600 mb-1">Foto</label>
+                    <div class="flex items-center gap-2">
+                        ${imagePreview}
+                        <input type="file" name="paket_edit_gambar[]" accept=".jpg,.jpeg,.png,image/jpeg,image/png" class="min-w-0 w-full text-[10px] text-gray-500">
+                    </div>
+                    <p class="text-[10px] text-gray-400 mt-1">Kosongkan untuk tetap memakai foto lama.</p>
+                </div>
+                <div class="md:col-span-1 flex justify-end md:justify-center">
+                    <button type="button" onclick="hapusRowEditVarian(this)" title="Hapus varian" class="px-3 py-2 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg"><i class="fa-solid fa-trash"></i></button>
+                </div>
+            </div>
+        </div>`;
+    container.insertAdjacentHTML('beforeend', html);
+}
 
-    if (!id) {
+function tambahRowEditVarian() {
+    renderRowEditVarian({ id: 0, nama_produk: '', harga: '', stok: 0, gambar: '' });
+}
+
+function hapusRowEditVarian(button) {
+    const rows = document.querySelectorAll('#containerEditPaketVarian .row-edit-paket-varian');
+    if (rows.length <= 1) {
+        alert('Minimal harus ada satu varian.');
         return;
     }
+    button.closest('.row-edit-paket-varian')?.remove();
+}
 
+function setEditPaketMode(isPackage, variants) {
+    const panel = document.getElementById('panelEditPaketCCTV');
+    const mode = document.getElementById('inputModeEditPaket');
+    if (!panel || !mode) return;
+    ['fieldHargaProduk', 'fieldPemasanganProduk', 'fieldStokProduk', 'fieldGambarProduk'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('hidden', Boolean(isPackage));
+    });
+    panel.classList.toggle('hidden', !isPackage);
+    mode.value = isPackage ? '1' : '';
+    const container = document.getElementById('containerEditPaketVarian');
+    container.innerHTML = '';
+    if (isPackage) {
+        (Array.isArray(variants) ? variants : []).forEach(v => renderRowEditVarian(v));
+        if (!container.children.length) renderRowEditVarian({ id: 0, nama_produk: '', harga: '', stok: 0, gambar: '' });
+    }
+}
 
-    // Reset
+const modalProduk = document.getElementById('modalProduk');
+const modalProdukContent = document.getElementById('modalProdukContent');
+const formProduk = document.getElementById('formProduk');
+const modalBrand = document.getElementById('modalBrand');
+const modalBrandContent = document.getElementById('modalBrandContent');
+
+function openTambahModal() {
     formProduk.reset();
+    setEditPaketMode(false, []);
+    document.getElementById('inputModeEditPaket').value = '';
+    document.getElementById('editProductId').value = '';
+    document.getElementById('inputModeTambah').disabled = false;
+    document.getElementById('inputModeEdit').disabled = true;
 
-    clearKategori();
+    document.getElementById('judulModalProduk').textContent = 'Tambah Produk Baru';
+    document.getElementById('subjudulModalProduk').textContent = 'Tambahkan produk CCTV baru';
+    document.getElementById('textSimpan').textContent = 'Simpan Produk';
+    document.getElementById('iconSimpan').className = 'fa-regular fa-floppy-disk';
+    document.getElementById('skuProduk').value = '';
+    document.getElementById('skuProduk').placeholder = 'SKU otomatis dibuat saat disimpan';
+    document.getElementById('infoSku').textContent = 'SKU dibuat otomatis oleh sistem.';
+    document.getElementById('wajibGambar').classList.remove('hidden');
+    document.getElementById('fileUpload').required = true;
 
     resetPreview();
+    clearKategori();
 
+    document.getElementById('pakaiPemasangan').checked = false;
+    updatePemasanganField();
 
-    document.getElementById(
-        'judulModalProduk'
-    ).textContent =
-        'Edit Produk';
+    openProdukModal();
+}
 
+function openProdukModal() {
+    modalProduk.classList.remove('hidden');
+    modalProduk.classList.add('flex');
+    setTimeout(() => {
+        modalProduk.classList.remove('opacity-0');
+        modalProdukContent.classList.remove('scale-95');
+    }, 10);
+}
 
-    document.getElementById(
-        'subjudulModalProduk'
-    ).textContent =
-        'Perbarui informasi produk CCTV';
+function closeProdukModal() {
+    modalProduk.classList.add('opacity-0');
+    modalProdukContent.classList.add('scale-95');
+    setTimeout(() => {
+        modalProduk.classList.add('hidden');
+        modalProduk.classList.remove('flex');
+    }, 200);
+}
 
+async function openEditModal(id) {
+    if (!id) return;
 
-    document.getElementById(
-        'textSimpan'
-    ).textContent =
-        'Simpan Perubahan';
+    formProduk.reset();
+    clearKategori();
+    resetPreview();
 
+    document.getElementById('judulModalProduk').textContent = 'Edit Produk';
+    document.getElementById('subjudulModalProduk').textContent = 'Perbarui informasi produk CCTV';
+    document.getElementById('textSimpan').textContent = 'Simpan Perubahan';
+    document.getElementById('iconSimpan').className = 'fa-solid fa-pen-to-square';
+    document.getElementById('inputModeTambah').disabled = true;
+    document.getElementById('inputModeEdit').disabled = false;
+    document.getElementById('inputModeEdit').value = '1';
+    document.getElementById('fileUpload').required = false;
+    document.getElementById('wajibGambar').classList.add('hidden');
 
-    document.getElementById(
-        'iconSimpan'
-    ).className =
-        'fa-solid fa-pen-to-square';
-
-
-    document.getElementById(
-        'inputModeTambah'
-    ).disabled = true;
-
-    document.getElementById(
-        'inputModeEdit'
-    ).disabled = false;
-
-    document.getElementById(
-        'inputModeEdit'
-    ).value = '1';
-
-
-    document.getElementById(
-        'fileUpload'
-    ).required = false;
-
-
-    document.getElementById(
-        'wajibGambar'
-    ).classList.add(
-        'hidden'
-    );
-
-
-    // Tampilkan loading
-    document.getElementById(
-        'namaProduk'
-    ).value =
-        'Memuat data...';
-
+    document.getElementById('namaProduk').value = 'Memuat data...';
 
     openProdukModal();
 
-
     try {
+        const response = await fetch('admin_produk.php?ajax=ambil_produk&id=' + encodeURIComponent(id));
+        const data = await response.json();
 
-        const response =
-            await fetch(
-                'admin_produk.php?ajax=ambil_produk&id=' +
-                encodeURIComponent(id)
-            );
-
-
-        const data =
-            await response.json();
-
-
-        if (
-            !data.success
-        ) {
-
-            alert(
-                data.message ||
-                'Gagal mengambil data produk.'
-            );
-
+        if (!data.success) {
+            alert(data.message || 'Gagal mengambil data produk.');
             closeProdukModal();
-
             return;
         }
 
+        const p = data.produk;
+        setEditPaketMode(Boolean(p.is_paket_cctv), p.varian || []);
 
-        const p =
-            data.produk;
+        document.getElementById('editProductId').value = p.id;
+        document.getElementById('namaProduk').value = p.nama_produk;
+        document.getElementById('skuProduk').value = p.kode_sku;
+        document.getElementById('infoSku').textContent = 'SKU tidak dapat diubah.';
+        document.getElementById('brandSelect').value = p.brand_id;
+        document.getElementById('harga').value = formatRupiahInput(p.harga);
 
-
-        // ==================================================
-        // ISI FORM
-        // ==================================================
-
-        document.getElementById(
-            'editProductId'
-        ).value =
-            p.id;
-
-
-        document.getElementById(
-            'namaProduk'
-        ).value =
-            p.nama_produk;
-
-
-        document.getElementById(
-            'skuProduk'
-        ).value =
-            p.kode_sku;
-
-
-        document.getElementById(
-            'infoSku'
-        ).textContent =
-            'SKU tidak dapat diubah.';
-
-
-        document.getElementById(
-            'brandSelect'
-        ).value =
-            p.brand_id;
-
-
-        document.getElementById(
-            'harga'
-        ).value =
-            formatRupiahInput(
-                p.harga
-            );
-
-
-        const adaPemasangan =
-            p.harga_pemasangan !== null &&
-            p.harga_pemasangan !== '' &&
-            Number(p.harga_pemasangan) > 0;
-
-        document.getElementById(
-            'pakaiPemasangan'
-        ).checked = adaPemasangan;
-
-        document.getElementById(
-            'hargaPemasangan'
-        ).value = adaPemasangan
-            ? formatRupiahInput(p.harga_pemasangan)
-            : '';
-
+        const adaPemasangan = p.harga_pemasangan !== null && p.harga_pemasangan !== '' && Number(p.harga_pemasangan) > 0;
+        document.getElementById('pakaiPemasangan').checked = adaPemasangan;
+        document.getElementById('hargaPemasangan').value = adaPemasangan ? formatRupiahInput(p.harga_pemasangan) : '';
         updatePemasanganField();
 
+        document.getElementById('stok').value = p.stok;
+        document.getElementById('deskripsi').value = p.deskripsi || '';
+        document.getElementById('spesifikasi').value = p.spesifikasi || '';
+        document.getElementById('isFeatured').checked = p.is_featured == 1;
 
-        document.getElementById(
-            'stok'
-        ).value =
-            p.stok;
-
-
-        document.getElementById(
-            'deskripsi'
-        ).value =
-            p.deskripsi || '';
-
-
-        document.getElementById(
-            'isFeatured'
-        ).checked =
-            p.is_featured == 1;
-
-
-        // ==================================================
-        // KATEGORI
-        // ==================================================
-
-        const kategori =
-            p.kategori_ids || [];
-
-
-        document
-            .querySelectorAll(
-                '.kategori-checkbox'
-            )
-            .forEach(
-                function (checkbox) {
-
-                    checkbox.checked =
-                        kategori.includes(
-                            parseInt(
-                                checkbox.value
-                            )
-                        );
-
-                }
-            );
-
-
+        const kategori = p.kategori_ids || [];
+        document.querySelectorAll('.kategori-checkbox').forEach(function (checkbox) {
+            checkbox.checked = kategori.includes(parseInt(checkbox.value));
+        });
         updateInfoKategori();
 
-
-        // ==================================================
-        // GAMBAR
-        // ==================================================
-
-        if (
-            p.gambar
-        ) {
-
-            const preview =
-                document.getElementById(
-                    'imagePreview'
-                );
-
-            preview.src =
-                'uploads/' +
-                p.gambar;
-
-            preview.classList.remove(
-                'hidden'
-            );
-
-
-            document.getElementById(
-                'iconUpload'
-            ).classList.add(
-                'hidden'
-            );
-
-
-            document.getElementById(
-                'textUpload'
-            ).classList.add(
-                'hidden'
-            );
-
-
-            document.getElementById(
-                'infoGambar'
-            ).textContent =
-                'Gambar saat ini. Pilih gambar baru jika ingin menggantinya.';
-
+        if (p.gambar) {
+            const preview = document.getElementById('imagePreview');
+            preview.src = 'uploads/' + p.gambar;
+            preview.classList.remove('hidden');
+            document.getElementById('iconUpload').classList.add('hidden');
+            document.getElementById('textUpload').classList.add('hidden');
+            document.getElementById('infoGambar').textContent = 'Gambar saat ini. Pilih gambar baru jika ingin menggantinya.';
         } else {
-
-            document.getElementById(
-                'infoGambar'
-            ).textContent =
-                'Produk belum memiliki gambar.';
+            document.getElementById('infoGambar').textContent = 'Produk belum memiliki gambar.';
         }
-
-
     } catch (error) {
-
-        console.error(
-            error
-        );
-
-        alert(
-            'Terjadi kesalahan saat mengambil data produk.'
-        );
-
+        console.error(error);
+        alert('Terjadi kesalahan saat mengambil data produk.');
         closeProdukModal();
     }
 }
 
-
-// ======================================================
-// CLEAR KATEGORI
-// ======================================================
-
 function clearKategori() {
-
-    document
-        .querySelectorAll(
-            '.kategori-checkbox'
-        )
-        .forEach(
-            function (checkbox) {
-
-                checkbox.checked =
-                    false;
-
-            }
-        );
-
-
+    document.querySelectorAll('.kategori-checkbox').forEach(function (checkbox) {
+        checkbox.checked = false;
+    });
     updateInfoKategori();
 }
 
-
-// ======================================================
-// INFO KATEGORI
-// ======================================================
-
 function updateInfoKategori() {
-
-    const jumlah =
-        document.querySelectorAll(
-            '.kategori-checkbox:checked'
-        ).length;
-
-
-    const info =
-        document.getElementById(
-            'infoKategori'
-        );
-
-
-    if (
-        jumlah === 0
-    ) {
-
-        info.textContent =
-            'Belum ada kategori dipilih.';
-
-        info.className =
-            'text-xs text-red-500 mt-2';
-
+    const jumlah = document.querySelectorAll('.kategori-checkbox:checked').length;
+    const info = document.getElementById('infoKategori');
+    if (jumlah === 0) {
+        info.textContent = 'Belum ada kategori dipilih.';
+        info.className = 'text-xs text-red-500 mt-2';
     } else {
-
-        info.textContent =
-            jumlah +
-            ' kategori dipilih.';
-
-        info.className =
-            'text-xs text-blue-600 mt-2';
+        info.textContent = jumlah + ' kategori dipilih.';
+        info.className = 'text-xs text-blue-600 mt-2';
     }
 }
 
-
-document
-    .querySelectorAll(
-        '.kategori-checkbox'
-    )
-    .forEach(
-        function (checkbox) {
-
-            checkbox.addEventListener(
-                'change',
-                updateInfoKategori
-            );
-
-        }
-    );
-
-
-// ======================================================
-// HARGA PEMASANGAN OPSIONAL
-// ======================================================
+document.querySelectorAll('.kategori-checkbox').forEach(function (checkbox) {
+    checkbox.addEventListener('change', updateInfoKategori);
+});
 
 function updatePemasanganField() {
-
-    const checkbox =
-        document.getElementById('pakaiPemasangan');
-
-    const input =
-        document.getElementById('hargaPemasangan');
-
-    const info =
-        document.getElementById('infoPemasangan');
-
-    if (!checkbox || !input || !info) {
-        return;
-    }
+    const checkbox = document.getElementById('pakaiPemasangan');
+    const input = document.getElementById('hargaPemasangan');
+    const info = document.getElementById('infoPemasangan');
+    if (!checkbox || !input || !info) return;
 
     if (checkbox.checked) {
-
         input.readOnly = false;
         input.required = true;
         input.placeholder = '2.000.000';
-
-        input.classList.remove(
-            'bg-gray-100',
-            'text-gray-400',
-            'cursor-not-allowed'
-        );
-
-        input.classList.add(
-            'bg-white',
-            'text-gray-700'
-        );
-
-        info.textContent =
-            'Masukkan harga total perangkat + jasa pemasangan teknisi.';
-
-        info.className =
-            'text-xs text-blue-600 mt-1';
-
+        input.classList.remove('bg-gray-100', 'text-gray-400', 'cursor-not-allowed');
+        input.classList.add('bg-white', 'text-gray-700');
+        info.textContent = 'Masukkan harga total perangkat + jasa pemasangan teknisi.';
+        info.className = 'text-xs text-blue-600 mt-1';
     } else {
-
         input.readOnly = true;
         input.required = false;
         input.value = '';
         input.placeholder = 'Tidak diperlukan';
-
-        input.classList.remove(
-            'bg-white',
-            'text-gray-700'
-        );
-
-        input.classList.add(
-            'bg-gray-100',
-            'text-gray-400',
-            'cursor-not-allowed'
-        );
-
-        info.textContent =
-            'Produk ini tidak membutuhkan jasa pemasangan teknisi.';
-
-        info.className =
-            'text-xs text-gray-400 mt-1';
+        input.classList.remove('bg-white', 'text-gray-700');
+        input.classList.add('bg-gray-100', 'text-gray-400', 'cursor-not-allowed');
+        info.textContent = 'Produk ini tidak membutuhkan jasa pemasangan teknisi.';
+        info.className = 'text-xs text-gray-400 mt-1';
     }
 }
 
+document.getElementById('pakaiPemasangan').addEventListener('change', updatePemasanganField);
 
-document
-    .getElementById('pakaiPemasangan')
-    .addEventListener(
-        'change',
-        updatePemasanganField
-    );
-
-
-// ======================================================
-// FORMAT HARGA
-// ======================================================
-
-function formatRupiahInput(
-    angka
-) {
-
-    angka =
-        String(
-            angka
-        ).replace(
-            /\D/g,
-            ''
-        );
-
-
-    if (
-        angka === ''
-    ) {
-
-        return '';
-    }
-
-
-    return angka.replace(
-        /\B(?=(\d{3})+(?!\d))/g,
-        '.'
-    );
+function formatRupiahInput(angka) {
+    angka = String(angka).replace(/\D/g, '');
+    if (angka === '') return '';
+    return angka.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
 }
 
-
-function pasangFormatHarga(
-    input
-) {
-
-    input.addEventListener(
-        'input',
-        function () {
-
-            let angka =
-                this.value.replace(
-                    /\D/g,
-                    ''
-                );
-
-
-            if (
-                angka === ''
-            ) {
-
-                this.value =
-                    '';
-
-                return;
-            }
-
-
-            this.value =
-                formatRupiahInput(
-                    angka
-                );
-        }
-    );
-}
-
-
-pasangFormatHarga(
-    document.getElementById(
-        'harga'
-    )
-);
-
-
-pasangFormatHarga(
-    document.getElementById(
-        'hargaPemasangan'
-    )
-);
-
-
-// ======================================================
-// SUBMIT FORM
-// ======================================================
-
-formProduk.addEventListener(
-    'submit',
-    function (event) {
-
-        const kategoriTerpilih =
-            document.querySelectorAll(
-                '.kategori-checkbox:checked'
-            );
-
-
-        if (
-            kategoriTerpilih.length === 0
-        ) {
-
-            event.preventDefault();
-
-            alert(
-                'Silakan pilih minimal satu kategori.'
-            );
-
+function pasangFormatHarga(input) {
+    input.addEventListener('input', function () {
+        let angka = this.value.replace(/\D/g, '');
+        if (angka === '') {
+            this.value = '';
             return;
         }
+        this.value = formatRupiahInput(angka);
+    });
+}
 
+pasangFormatHarga(document.getElementById('harga'));
+pasangFormatHarga(document.getElementById('hargaPemasangan'));
 
-        const harga =
-            parseInt(
-                document
-                    .getElementById(
-                        'harga'
-                    )
-                    .value
-                    .replace(
-                        /\D/g,
-                        ''
-                    ),
-                10
-            ) || 0;
+formProduk.addEventListener('submit', function (event) {
+    const kategoriTerpilih = document.querySelectorAll('.kategori-checkbox:checked');
+    if (kategoriTerpilih.length === 0) {
+        event.preventDefault();
+        alert('Silakan pilih minimal satu kategori.');
+        return;
+    }
 
+    const harga = parseInt(document.getElementById('harga').value.replace(/\D/g, ''), 10) || 0;
+    const pakaiPemasangan = document.getElementById('pakaiPemasangan').checked;
+    const hargaPemasangan = parseInt(document.getElementById('hargaPemasangan').value.replace(/\D/g, ''), 10) || 0;
 
-        const pakaiPemasangan =
-            document.getElementById(
-                'pakaiPemasangan'
-            ).checked;
+    if (harga <= 0) {
+        event.preventDefault();
+        alert('Harga CCTV harus lebih dari 0.');
+        return;
+    }
 
-        const hargaPemasangan =
-            parseInt(
-                document
-                    .getElementById(
-                        'hargaPemasangan'
-                    )
-                    .value
-                    .replace(
-                        /\D/g,
-                        ''
-                    ),
-                10
-            ) || 0;
-
-
-        if (
-            harga <= 0
-        ) {
-
+    if (pakaiPemasangan) {
+        if (hargaPemasangan <= 0) {
             event.preventDefault();
-
-            alert(
-                'Harga CCTV harus lebih dari 0.'
-            );
-
+            alert('Harga pemasangan wajib diisi.');
             return;
         }
-
-
-        if (pakaiPemasangan) {
-
-            if (hargaPemasangan <= 0) {
-
-                event.preventDefault();
-
-                alert(
-                    'Harga pemasangan wajib diisi.'
-                );
-
-                return;
-            }
-
-            if (hargaPemasangan < harga) {
-
-                event.preventDefault();
-
-                alert(
-                    'Harga CCTV + pemasangan tidak boleh lebih rendah dari harga CCTV.'
-                );
-
-                return;
-            }
+        if (hargaPemasangan < harga) {
+            event.preventDefault();
+            alert('Harga CCTV + pemasangan tidak boleh lebih rendah dari harga CCTV.');
+            return;
         }
-
-
-        // Bersihkan format harga sebelum dikirim
-        document.getElementById(
-            'harga'
-        ).value =
-            harga;
-
-
-        if (pakaiPemasangan) {
-            document.getElementById(
-                'hargaPemasangan'
-            ).value =
-                hargaPemasangan;
-        } else {
-            document.getElementById(
-                'hargaPemasangan'
-            ).value = '';
-        }
-
-
-        // Loading
-        document.getElementById(
-            'btnSimpanProduk'
-        ).disabled =
-            true;
-
-        document.getElementById(
-            'btnSimpanProduk'
-        ).classList.add(
-            'opacity-70'
-        );
-
-        document.getElementById(
-            'textSimpan'
-        ).textContent =
-            'Menyimpan...';
-
-        document.getElementById(
-            'iconSimpan'
-        ).className =
-            'fa-solid fa-spinner fa-spin';
     }
-);
 
+    document.getElementById('harga').value = harga;
+    if (pakaiPemasangan) {
+        document.getElementById('hargaPemasangan').value = hargaPemasangan;
+    } else {
+        document.getElementById('hargaPemasangan').value = '';
+    }
 
-// ======================================================
-// PREVIEW GAMBAR
-// ======================================================
+    document.getElementById('btnSimpanProduk').disabled = true;
+    document.getElementById('btnSimpanProduk').classList.add('opacity-70');
+    document.getElementById('textSimpan').textContent = 'Menyimpan...';
+    document.getElementById('iconSimpan').className = 'fa-solid fa-spinner fa-spin';
+});
 
-document
-    .getElementById(
-        'fileUpload'
-    )
-    .addEventListener(
-        'change',
-        function () {
+document.getElementById('fileUpload').addEventListener('change', function () {
+    const file = this.files[0];
+    if (!file) return;
 
-            const file =
-                this.files[0];
+    if (file.size > 5 * 1024 * 1024) {
+        alert('Ukuran gambar maksimal 5 MB.');
+        this.value = '';
+        return;
+    }
 
-
-            if (!file) {
-                return;
-            }
-
-
-            if (
-                file.size >
-                5 * 1024 * 1024
-            ) {
-
-                alert(
-                    'Ukuran gambar maksimal 5 MB.'
-                );
-
-                this.value =
-                    '';
-
-                return;
-            }
-
-
-            const reader =
-                new FileReader();
-
-
-            reader.onload =
-                function (event) {
-
-                    const preview =
-                        document.getElementById(
-                            'imagePreview'
-                        );
-
-                    preview.src =
-                        event.target.result;
-
-                    preview.classList.remove(
-                        'hidden'
-                    );
-
-
-                    document.getElementById(
-                        'iconUpload'
-                    ).classList.add(
-                        'hidden'
-                    );
-
-
-                    document.getElementById(
-                        'textUpload'
-                    ).classList.add(
-                        'hidden'
-                    );
-
-
-                    document.getElementById(
-                        'infoGambar'
-                    ).textContent =
-                        'Gambar baru dipilih.';
-
-                };
-
-
-            reader.readAsDataURL(
-                file
-            );
-
-        }
-    );
-
-
-// ======================================================
-// RESET PREVIEW
-// ======================================================
+    const reader = new FileReader();
+    reader.onload = function (event) {
+        const preview = document.getElementById('imagePreview');
+        preview.src = event.target.result;
+        preview.classList.remove('hidden');
+        document.getElementById('iconUpload').classList.add('hidden');
+        document.getElementById('textUpload').classList.add('hidden');
+        document.getElementById('infoGambar').textContent = 'Gambar baru dipilih.';
+    };
+    reader.readAsDataURL(file);
+});
 
 function resetPreview() {
-
-    const preview =
-        document.getElementById(
-            'imagePreview'
-        );
-
-
-    preview.src =
-        '';
-
-    preview.classList.add(
-        'hidden'
-    );
-
-
-    document.getElementById(
-        'iconUpload'
-    ).classList.remove(
-        'hidden'
-    );
-
-
-    document.getElementById(
-        'textUpload'
-    ).classList.remove(
-        'hidden'
-    );
-
-
-    document.getElementById(
-        'infoGambar'
-    ).textContent =
-        'Pilih gambar produk.';
-
-
-    document.getElementById(
-        'fileUpload'
-    ).value =
-        '';
+    const preview = document.getElementById('imagePreview');
+    preview.src = '';
+    preview.classList.add('hidden');
+    document.getElementById('iconUpload').classList.remove('hidden');
+    document.getElementById('textUpload').classList.remove('hidden');
+    document.getElementById('infoGambar').textContent = 'Pilih gambar produk.';
+    document.getElementById('fileUpload').value = '';
 }
-
-
-// ======================================================
-// MODAL BRAND
-// ======================================================
 
 function openBrandModal() {
-
-    document.getElementById(
-        'namaMerekBaru'
-    ).value =
-        '';
-
-
-    document.getElementById(
-        'pesanBrand'
-    ).className =
-        'hidden mt-4 p-3 rounded-lg text-sm';
-
-
-    modalBrand.classList.remove(
-        'hidden'
-    );
-
-    modalBrand.classList.add(
-        'flex'
-    );
-
-
-    setTimeout(
-        function () {
-
-            modalBrand.classList.remove(
-                'opacity-0'
-            );
-
-            modalBrandContent.classList.remove(
-                'scale-95'
-            );
-
-
-            document.getElementById(
-                'namaMerekBaru'
-            ).focus();
-
-        },
-        10
-    );
+    document.getElementById('namaMerekBaru').value = '';
+    document.getElementById('pesanBrand').className = 'hidden mt-4 p-3 rounded-lg text-sm';
+    modalBrand.classList.remove('hidden');
+    modalBrand.classList.add('flex');
+    setTimeout(() => {
+        modalBrand.classList.remove('opacity-0');
+        modalBrandContent.classList.remove('scale-95');
+        document.getElementById('namaMerekBaru').focus();
+    }, 10);
 }
-
 
 function closeBrandModal() {
-
-    modalBrand.classList.add(
-        'opacity-0'
-    );
-
-    modalBrandContent.classList.add(
-        'scale-95'
-    );
-
-
-    setTimeout(
-        function () {
-
-            modalBrand.classList.add(
-                'hidden'
-            );
-
-            modalBrand.classList.remove(
-                'flex'
-            );
-
-        },
-        200
-    );
+    modalBrand.classList.add('opacity-0');
+    modalBrandContent.classList.add('scale-95');
+    setTimeout(() => {
+        modalBrand.classList.add('hidden');
+        modalBrand.classList.remove('flex');
+    }, 200);
 }
 
+document.getElementById('formBrand').addEventListener('submit', async function (event) {
+    event.preventDefault();
+    const nama = document.getElementById('namaMerekBaru').value.trim();
+    if (nama === '') {
+        tampilkanPesanBrand('Nama merek wajib diisi.', false);
+        return;
+    }
 
-// ======================================================
-// AJAX TAMBAH BRAND
-// ======================================================
+    const button = document.getElementById('btnSimpanBrand');
+    button.disabled = true;
+    button.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Menyimpan...`;
 
-document
-    .getElementById(
-        'formBrand'
-    )
-    .addEventListener(
-        'submit',
-        async function (event) {
+    const formData = new FormData();
+    formData.append('ajax_tambah_merek', '1');
+    formData.append('nama_merek', nama);
 
-            event.preventDefault();
+    try {
+        const response = await fetch('admin_produk.php', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await response.json();
 
+        if (data.success) {
+            const select = document.getElementById('brandSelect');
+            const option = document.createElement('option');
+            option.value = data.id;
+            option.textContent = data.nama_merek;
+            select.appendChild(option);
+            select.value = data.id;
 
-            const nama =
-                document.getElementById(
-                    'namaMerekBaru'
-                ).value.trim();
-
-
-            if (
-                nama === ''
-            ) {
-
-                tampilkanPesanBrand(
-                    'Nama merek wajib diisi.',
-                    false
-                );
-
-                return;
-            }
-
-
-            const button =
-                document.getElementById(
-                    'btnSimpanBrand'
-                );
-
-
-            button.disabled =
-                true;
-
-            button.innerHTML = `
-                <i class="fa-solid fa-spinner fa-spin"></i>
-                Menyimpan...
-            `;
-
-
-            const formData =
-                new FormData();
-
-
-            formData.append(
-                'ajax_tambah_merek',
-                '1'
-            );
-
-
-            formData.append(
-                'nama_merek',
-                nama
-            );
-
-
-            try {
-
-                const response =
-                    await fetch(
-                        'admin_produk.php',
-                        {
-                            method: 'POST',
-                            body: formData
-                        }
-                    );
-
-
-                const data =
-                    await response.json();
-
-
-                if (
-                    data.success
-                ) {
-
-                    const select =
-                        document.getElementById(
-                            'brandSelect'
-                        );
-
-
-                    const option =
-                        document.createElement(
-                            'option'
-                        );
-
-
-                    option.value =
-                        data.id;
-
-                    option.textContent =
-                        data.nama_merek;
-
-
-                    select.appendChild(
-                        option
-                    );
-
-
-                    select.value =
-                        data.id;
-
-
-                    tampilkanPesanBrand(
-                        data.message,
-                        true
-                    );
-
-
-                    setTimeout(
-                        function () {
-
-                            closeBrandModal();
-
-                        },
-                        500
-                    );
-
-                } else {
-
-                    tampilkanPesanBrand(
-                        data.message ||
-                        'Gagal menambahkan merek.',
-                        false
-                    );
-                }
-
-            } catch (error) {
-
-                console.error(
-                    error
-                );
-
-                tampilkanPesanBrand(
-                    'Terjadi kesalahan pada server.',
-                    false
-                );
-            }
-
-
-            button.disabled =
-                false;
-
-            button.innerHTML = `
-                <i class="fa-solid fa-plus"></i>
-                Simpan Merek
-            `;
-
+            tampilkanPesanBrand(data.message, true);
+            setTimeout(() => {
+                closeBrandModal();
+            }, 500);
+        } else {
+            tampilkanPesanBrand(data.message || 'Gagal menambahkan merek.', false);
         }
-    );
+    } catch (error) {
+        console.error(error);
+        tampilkanPesanBrand('Terjadi kesalahan pada server.', false);
+    }
 
+    button.disabled = false;
+    button.innerHTML = `<i class="fa-solid fa-plus"></i> Simpan Merek`;
+});
 
-// ======================================================
-// PESAN BRAND
-// ======================================================
-
-function tampilkanPesanBrand(
-    pesan,
-    berhasil
-) {
-
-    const box =
-        document.getElementById(
-            'pesanBrand'
-        );
-
-
-    box.textContent =
-        pesan;
-
-
-    box.className =
-        berhasil
-            ? 'mt-4 p-3 rounded-lg text-sm bg-green-100 border border-green-200 text-green-700'
-            : 'mt-4 p-3 rounded-lg text-sm bg-red-100 border border-red-200 text-red-700';
-
+function tampilkanPesanBrand(pesan, berhasil) {
+    const box = document.getElementById('pesanBrand');
+    box.textContent = pesan;
+    box.className = berhasil
+        ? 'mt-4 p-3 rounded-lg text-sm bg-green-100 border border-green-200 text-green-700'
+        : 'mt-4 p-3 rounded-lg text-sm bg-red-100 border border-red-200 text-red-700';
 }
 
-
-// ======================================================
-// KLIK LUAR MODAL PRODUK
-// ======================================================
-
-modalProduk.addEventListener(
-    'click',
-    function (event) {
-
-        if (
-            event.target === modalProduk
-        ) {
-
-            closeProdukModal();
-
-        }
-
+modalProduk.addEventListener('click', function (event) {
+    if (event.target === modalProduk) {
+        closeProdukModal();
     }
-);
+});
 
-
-// ======================================================
-// KLIK LUAR MODAL BRAND
-// ======================================================
-
-modalBrand.addEventListener(
-    'click',
-    function (event) {
-
-        if (
-            event.target === modalBrand
-        ) {
-
-            closeBrandModal();
-
-        }
-
+modalBrand.addEventListener('click', function (event) {
+    if (event.target === modalBrand) {
+        closeBrandModal();
     }
-);
+});
 
-
-// ======================================================
-// ESC
-// ======================================================
-
-document.addEventListener(
-    'keydown',
-    function (event) {
-
-        if (
-            event.key !== 'Escape'
-        ) {
-
-            return;
-        }
-
-
-        if (
-            !modalBrand.classList.contains(
-                'hidden'
-            )
-        ) {
-
-            closeBrandModal();
-
-        } else if (
-            !modalProduk.classList.contains(
-                'hidden'
-            )
-        ) {
-
-            closeProdukModal();
-
-        }
-
+document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') return;
+    if (!modalBrand.classList.contains('hidden')) {
+        closeBrandModal();
+    } else if (!modalProduk.classList.contains('hidden')) {
+        closeProdukModal();
     }
-);
+});
 
-</script>
+document.addEventListener('DOMContentLoaded', function () {
+    const search = document.getElementById('searchProduk');
+    const rows = Array.from(document.querySelectorAll('tbody tr[data-search]'));
+    const emptyRow = document.getElementById('barisTidakDitemukan');
 
+    if (!search) return;
 
-<script>
+    function filterRows() {
+        const keyword = search.value.toLowerCase().trim();
+        let jumlah = 0;
 
-// ======================================================
-// LIVE SEARCH
-// ======================================================
+        rows.forEach(function (row) {
+            const text = (row.dataset.search || '').toLowerCase();
+            const cocok = keyword === '' || text.includes(keyword);
+            row.style.display = cocok ? '' : 'none';
+            if (cocok) jumlah++;
+        });
 
-document.addEventListener(
-    'DOMContentLoaded',
-    function () {
-
-        const search =
-            document.getElementById(
-                'searchProduk'
-            );
-
-
-        const rows =
-            Array.from(
-                document.querySelectorAll(
-                    'tbody tr[data-search]'
-                )
-            );
-
-
-        const emptyRow =
-            document.getElementById(
-                'barisTidakDitemukan'
-            );
-
-
-        if (
-            !search
-        ) {
-            return;
+        if (emptyRow) {
+            emptyRow.style.display = jumlah === 0 ? 'table-row' : 'none';
         }
+    }
 
+    search.addEventListener('input', filterRows);
+    search.addEventListener('search', filterRows);
 
-        function filterRows() {
-
-            const keyword =
-                search.value
-                    .toLowerCase()
-                    .trim();
-
-
-            let jumlah =
-                0;
-
-
-            rows.forEach(
-                function (row) {
-
-                    const text =
-                        (
-                            row.dataset.search ||
-                            ''
-                        ).toLowerCase();
-
-
-                    const cocok =
-                        keyword === '' ||
-                        text.includes(
-                            keyword
-                        );
-
-
-                    row.style.display =
-                        cocok
-                            ? ''
-                            : 'none';
-
-
-                    if (
-                        cocok
-                    ) {
-
-                        jumlah++;
-                    }
-
-                }
-            );
-
-
-            if (
-                emptyRow
-            ) {
-
-                emptyRow.style.display =
-                    jumlah === 0
-                        ? 'table-row'
-                        : 'none';
-            }
-        }
-
-
-        search.addEventListener(
-            'input',
-            filterRows
-        );
-
-
-        search.addEventListener(
-            'search',
-            filterRows
-        );
-
-
-        // Jangan submit/reload saat Enter
-        document
-            .getElementById(
-                'formFilter'
-            )
-            .addEventListener(
-                'submit',
-                function (event) {
-
-                    event.preventDefault();
-
-                    filterRows();
-
-                }
-            );
-
-
+    document.getElementById('formFilter').addEventListener('submit', function (event) {
+        event.preventDefault();
         filterRows();
+    });
 
-    }
-);
+    filterRows();
+});
 
 </script>
 

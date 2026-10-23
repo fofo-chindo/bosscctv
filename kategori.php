@@ -17,9 +17,13 @@ $merekTerpilih    = null;
 $produkList       = [];
 
 // Konfigurasi Paginasi
-$batas_produk = 10; // Jumlah produk per halaman
+$batas_produk = 10;
 $halaman_aktif = isset($_GET['halaman']) ? (int)$_GET['halaman'] : 1;
-if ($halaman_aktif < 1) $halaman_aktif = 1;
+
+if ($halaman_aktif < 1) {
+    $halaman_aktif = 1;
+}
+
 $offset = ($halaman_aktif - 1) * $batas_produk;
 
 /* =========================================================
@@ -90,10 +94,17 @@ if ($filterAktif !== 'semua') {
     );
 
     if ($stmtKategori) {
-        mysqli_stmt_bind_param($stmtKategori, 's', $filterAktif);
+        mysqli_stmt_bind_param(
+            $stmtKategori,
+            's',
+            $filterAktif
+        );
+
         mysqli_stmt_execute($stmtKategori);
+
         $resultTerpilih = mysqli_stmt_get_result($stmtKategori);
         $kategoriTerpilih = mysqli_fetch_assoc($resultTerpilih);
+
         mysqli_stmt_close($stmtKategori);
     }
 }
@@ -113,56 +124,79 @@ if ($merekAktif !== 'semua') {
     );
 
     if ($stmtMerek) {
-        mysqli_stmt_bind_param($stmtMerek, 's', $merekAktif);
+        mysqli_stmt_bind_param(
+            $stmtMerek,
+            's',
+            $merekAktif
+        );
+
         mysqli_stmt_execute($stmtMerek);
+
         $resultMerekTerpilih = mysqli_stmt_get_result($stmtMerek);
         $merekTerpilih = mysqli_fetch_assoc($resultMerekTerpilih);
+
         mysqli_stmt_close($stmtMerek);
     }
 }
 
 /* =========================================================
-   HITUNG TOTAL PRODUK (UNTUK PAGINASI)
+   HITUNG TOTAL PRODUK UNTUK PAGINASI
 ========================================================= */
+
 $sqlCount = "
     SELECT COUNT(DISTINCT p.id) AS total
     FROM products p
-    LEFT JOIN product_categories pc ON pc.product_id = p.id
-    WHERE p.is_active = 1 AND p.is_featured = 0
+    LEFT JOIN product_categories pc
+        ON pc.product_id = p.id
+    WHERE p.is_active = 1
+    AND p.is_featured = 0
 ";
 
 $typesCount = '';
 $paramsCount = [];
 
 if ($kategoriTerpilih) {
-    $sqlCount .= " AND EXISTS (
-        SELECT 1 FROM product_categories pc_filter 
-        WHERE pc_filter.product_id = p.id AND pc_filter.category_id = ?
-    )";
+    $sqlCount .= "
+        AND EXISTS (
+            SELECT 1
+            FROM product_categories pc_filter
+            WHERE pc_filter.product_id = p.id
+            AND pc_filter.category_id = ?
+        )
+    ";
+
     $typesCount .= 'i';
     $paramsCount[] = (int)$kategoriTerpilih['id'];
 }
 
 if ($merekTerpilih) {
     $sqlCount .= " AND p.brand_id = ? ";
+
     $typesCount .= 'i';
     $paramsCount[] = (int)$merekTerpilih['id'];
 }
 
 $stmtCount = mysqli_prepare($koneksi, $sqlCount);
+
 if (!empty($paramsCount)) {
-    mysqli_stmt_bind_param($stmtCount, $typesCount, ...$paramsCount);
+    mysqli_stmt_bind_param(
+        $stmtCount,
+        $typesCount,
+        ...$paramsCount
+    );
 }
+
 mysqli_stmt_execute($stmtCount);
+
 $resultCount = mysqli_stmt_get_result($stmtCount);
 $total_data = mysqli_fetch_assoc($resultCount)['total'];
+
 mysqli_stmt_close($stmtCount);
 
 $total_halaman = ceil($total_data / $batas_produk);
 
-
 /* =========================================================
-   AMBIL PRODUK MULTI-KATEGORI (DENGAN LIMIT)
+   AMBIL PRODUK MULTI-KATEGORI DENGAN LIMIT
 ========================================================= */
 
 $sqlProduk = "
@@ -177,23 +211,35 @@ $sqlProduk = "
         p.harga_pemasangan,
         p.stok,
         p.gambar,
+
         GROUP_CONCAT(
             DISTINCT c.nama_kategori
             ORDER BY c.nama_kategori ASC
             SEPARATOR '|||'
         ) AS nama_kategori,
+
         GROUP_CONCAT(
             DISTINCT c.slug
             ORDER BY c.nama_kategori ASC
             SEPARATOR '|||'
         ) AS kategori_slug,
+
         b.nama_merek,
         b.slug AS merek_slug
+
     FROM products p
-    LEFT JOIN product_categories pc ON pc.product_id = p.id
-    LEFT JOIN categories c ON c.id = pc.category_id
-    LEFT JOIN brands b ON b.id = p.brand_id
-    WHERE p.is_active = 1 AND p.is_featured = 0
+
+    LEFT JOIN product_categories pc
+        ON pc.product_id = p.id
+
+    LEFT JOIN categories c
+        ON c.id = pc.category_id
+
+    LEFT JOIN brands b
+        ON b.id = p.brand_id
+
+    WHERE p.is_active = 1
+    AND p.is_featured = 0
 ";
 
 $types = '';
@@ -208,12 +254,14 @@ if ($kategoriTerpilih) {
             AND pc_filter.category_id = ?
         )
     ";
+
     $types .= 'i';
     $params[] = (int)$kategoriTerpilih['id'];
 }
 
 if ($merekTerpilih) {
     $sqlProduk .= " AND p.brand_id = ? ";
+
     $types .= 'i';
     $params[] = (int)$merekTerpilih['id'];
 }
@@ -221,28 +269,52 @@ if ($merekTerpilih) {
 // Tambahkan LIMIT untuk paginasi
 $sqlProduk .= "
     GROUP BY
-        p.id, p.category_id, p.brand_id, p.kode_sku, p.nama_produk, p.deskripsi, p.harga, p.harga_pemasangan, p.stok, p.gambar, b.nama_merek, b.slug
+        p.id,
+        p.category_id,
+        p.brand_id,
+        p.kode_sku,
+        p.nama_produk,
+        p.deskripsi,
+        p.harga,
+        p.harga_pemasangan,
+        p.stok,
+        p.gambar,
+        b.nama_merek,
+        b.slug
+
     ORDER BY p.id DESC
     LIMIT ?, ?
 ";
+
 $types .= 'ii';
 $params[] = $offset;
 $params[] = $batas_produk;
 
-
 $stmtProduk = mysqli_prepare($koneksi, $sqlProduk);
+
 if (!$stmtProduk) {
-    die('Query produk gagal: ' . htmlspecialchars(mysqli_error($koneksi)));
+    die(
+        'Query produk gagal: ' .
+        htmlspecialchars(mysqli_error($koneksi))
+    );
 }
+
 if (!empty($params)) {
-    mysqli_stmt_bind_param($stmtProduk, $types, ...$params);
+    mysqli_stmt_bind_param(
+        $stmtProduk,
+        $types,
+        ...$params
+    );
 }
+
 mysqli_stmt_execute($stmtProduk);
+
 $resultProduk = mysqli_stmt_get_result($stmtProduk);
 
 while ($row = mysqli_fetch_assoc($resultProduk)) {
     $produkList[] = $row;
 }
+
 mysqli_stmt_close($stmtProduk);
 
 /* =========================================================
@@ -250,11 +322,17 @@ mysqli_stmt_close($stmtProduk);
 ========================================================= */
 
 if ($kategoriTerpilih && $merekTerpilih) {
-    $namaFilter = $kategoriTerpilih['nama_kategori'] . ' • ' . $merekTerpilih['nama_merek'];
+    $namaFilter =
+        $kategoriTerpilih['nama_kategori'] .
+        ' • ' .
+        $merekTerpilih['nama_merek'];
+
 } elseif ($kategoriTerpilih) {
     $namaFilter = $kategoriTerpilih['nama_kategori'];
+
 } elseif ($merekTerpilih) {
     $namaFilter = $merekTerpilih['nama_merek'];
+
 } else {
     $namaFilter = 'Semua Produk';
 }
@@ -275,28 +353,38 @@ if ($kategoriTerpilih && $merekTerpilih) {
     </div>
 
     <!-- AREA KATEGORI -->
-    <section id="area-kategori" class="relative z-10 pt-10 pb-4 scroll-mt-24">
+    <section
+        id="area-kategori"
+        class="relative z-10 pt-10 pb-4 scroll-mt-24"
+    >
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+
             <h1 class="text-3xl sm:text-5xl font-black text-white drop-shadow-md">
                 Pilih Kategori Produk
             </h1>
+
             <p class="mt-2 text-purple-100 text-sm sm:text-base max-w-2xl mx-auto">
                 Temukan berbagai produk CCTV dan perlengkapan keamanan sesuai dengan kebutuhan Anda.
             </p>
+
         </div>
     </section>
 
     <!-- =====================================================
-         MENU KATEGORI + MEREK (SAMA PERSIS DENGAN PRODUK.PHP)
+         MENU KATEGORI + MEREK
     ====================================================== -->
+
     <div class="sticky top-20 z-50 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 mb-4 transition-all space-y-2">
-        
+
         <!-- BARIS 1: FILTER KATEGORI -->
         <div class="flex justify-center">
             <div class="bg-[#111126]/95 backdrop-blur-xl border border-white/20 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.4)] p-1.5 pb-2.5 max-w-full overflow-x-auto custom-scrollbar">
+
                 <div class="flex items-center gap-1 min-w-max">
-                    <a href="kategori.php?kategori=semua&merek=<?= urlencode($merekAktif) ?>#area-kategori"
-                       class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $filterAktif === 'semua' ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
+
+                    <a
+                        href="kategori.php?kategori=semua&merek=<?= urlencode($merekAktif) ?>#area-kategori"
+                        class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $filterAktif === 'semua' ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
                     >
                         <i class="fa-solid fa-list text-[11px] <?= $filterAktif === 'semua' ? 'text-white' : 'text-blue-400' ?>"></i>
                         Semua Kategori
@@ -304,12 +392,15 @@ if ($kategoriTerpilih && $merekTerpilih) {
 
                     <?php foreach ($kategoriList as $item): ?>
                         <?php $kategoriTerpilihItem = ($filterAktif === $item['slug']); ?>
-                        <a href="kategori.php?kategori=<?= urlencode($item['slug']) ?>&merek=<?= urlencode($merekAktif) ?>#area-kategori"
-                           class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $kategoriTerpilihItem ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
+
+                        <a
+                            href="kategori.php?kategori=<?= urlencode($item['slug']) ?>&merek=<?= urlencode($merekAktif) ?>#area-kategori"
+                            class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $kategoriTerpilihItem ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
                         >
                             <?= htmlspecialchars($item['nama_kategori']) ?>
                         </a>
                     <?php endforeach; ?>
+
                 </div>
             </div>
         </div>
@@ -317,9 +408,12 @@ if ($kategoriTerpilih && $merekTerpilih) {
         <!-- BARIS 2: FILTER MEREK -->
         <div class="flex justify-center">
             <div class="bg-[#111126]/95 backdrop-blur-xl border border-white/20 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.4)] p-1.5 pb-2.5 max-w-full overflow-x-auto custom-scrollbar">
+
                 <div class="flex items-center gap-1 min-w-max">
-                    <a href="kategori.php?kategori=<?= urlencode($filterAktif) ?>&merek=semua#area-kategori"
-                       class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $merekAktif === 'semua' ? 'bg-gradient-to-r from-orange-500 to-orange-400 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
+
+                    <a
+                        href="kategori.php?kategori=<?= urlencode($filterAktif) ?>&merek=semua#area-kategori"
+                        class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $merekAktif === 'semua' ? 'bg-gradient-to-r from-orange-500 to-orange-400 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
                     >
                         <i class="fa-solid fa-layer-group text-[11px] <?= $merekAktif === 'semua' ? 'text-white' : 'text-orange-400' ?>"></i>
                         Semua Merek
@@ -327,13 +421,16 @@ if ($kategoriTerpilih && $merekTerpilih) {
 
                     <?php foreach ($merekList as $merek): ?>
                         <?php $merekTerpilihItem = ($merekAktif === $merek['slug']); ?>
-                        <a href="kategori.php?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merek['slug']) ?>#area-kategori"
-                           class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $merekTerpilihItem ? 'bg-gradient-to-r from-orange-500 to-orange-400 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
+
+                        <a
+                            href="kategori.php?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merek['slug']) ?>#area-kategori"
+                            class="flex items-center gap-2 px-3.5 py-2 rounded-lg font-bold text-xs whitespace-nowrap transition-all duration-300 <?= $merekTerpilihItem ? 'bg-gradient-to-r from-orange-500 to-orange-400 text-white shadow-md' : 'text-gray-200 hover:bg-white/10 hover:text-white' ?>"
                         >
                             <i class="fa-solid fa-tag text-[10px] <?= $merekTerpilihItem ? 'text-white' : 'text-orange-400' ?>"></i>
                             <?= htmlspecialchars($merek['nama_merek']) ?>
                         </a>
                     <?php endforeach; ?>
+
                 </div>
             </div>
         </div>
@@ -346,19 +443,40 @@ if ($kategoriTerpilih && $merekTerpilih) {
             <!-- PENCARIAN PRODUK -->
             <div class="mb-6">
                 <div class="relative max-w-2xl mx-auto">
+
                     <i class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"></i>
-                    <input type="text" id="searchProduk" placeholder="Cari produk di halaman ini..." autocomplete="off" class="w-full bg-white border border-gray-200 rounded-xl pl-11 pr-11 py-3.5 text-sm text-gray-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
-                    <button type="button" id="clearSearchProduk" class="hidden absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition items-center justify-center" aria-label="Hapus pencarian">
+
+                    <input
+                        type="text"
+                        id="searchProduk"
+                        placeholder="Cari produk di halaman ini..."
+                        autocomplete="off"
+                        class="w-full bg-white border border-gray-200 rounded-xl pl-11 pr-11 py-3.5 text-sm text-gray-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    >
+
+                    <button
+                        type="button"
+                        id="clearSearchProduk"
+                        class="hidden absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition items-center justify-center"
+                        aria-label="Hapus pencarian"
+                    >
                         <i class="fa-solid fa-xmark"></i>
                     </button>
+
                 </div>
-                <p id="hasilPencarianProduk" class="text-xs text-purple-200 text-center mt-2 hidden"></p>
+
+                <p
+                    id="hasilPencarianProduk"
+                    class="text-xs text-purple-200 text-center mt-2 hidden"
+                ></p>
             </div>
 
             <!-- INFORMASI FILTER -->
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
+
                 <div>
                     <p class="text-sm text-purple-200">
+
                         <?php if ($merekTerpilih && $kategoriTerpilih): ?>
                             Kategori & Merek
                         <?php elseif ($merekTerpilih): ?>
@@ -366,28 +484,44 @@ if ($kategoriTerpilih && $merekTerpilih) {
                         <?php else: ?>
                             Kategori
                         <?php endif; ?>
+
                     </p>
+
                     <h2 class="text-xl font-bold text-white">
                         <?= htmlspecialchars($namaFilter) ?>
                     </h2>
                 </div>
 
                 <div class="text-sm text-purple-200">
-                    Menampilkan <span class="font-semibold text-white"><?= count($produkList) ?></span> dari <span class="font-semibold text-white"><?= $total_data ?></span> produk (Hal <?= $halaman_aktif ?>)
+                    Menampilkan
+                    <span class="font-semibold text-white">
+                        <?= count($produkList) ?>
+                    </span>
+                    dari
+                    <span class="font-semibold text-white">
+                        <?= $total_data ?>
+                    </span>
+                    produk (Hal <?= $halaman_aktif ?>)
                 </div>
+
             </div>
 
             <?php if (!empty($produkList)): ?>
-                <!-- GRID DIUBAH MENJADI 2 KOLOM DI MOBILE (grid-cols-2) -->
+
+                <!-- GRID PRODUK -->
                 <div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-6">
 
                     <?php foreach ($produkList as $produk): ?>
+
                         <?php
                         $daftarKategori = [];
 
                         if (!empty($produk['nama_kategori'])) {
                             $daftarKategori = array_filter(
-                                array_map('trim', explode('|||', $produk['nama_kategori']))
+                                array_map(
+                                    'trim',
+                                    explode('|||', $produk['nama_kategori'])
+                                )
                             );
                         }
 
@@ -406,9 +540,11 @@ if ($kategoriTerpilih && $merekTerpilih) {
                             : 'Tanpa Kategori';
 
                         $hargaPemasanganData =
-                            ($produk['harga_pemasangan'] !== null &&
-                             $produk['harga_pemasangan'] !== '' &&
-                             (float)$produk['harga_pemasangan'] > 0)
+                            (
+                                $produk['harga_pemasangan'] !== null &&
+                                $produk['harga_pemasangan'] !== '' &&
+                                (float)$produk['harga_pemasangan'] > 0
+                            )
                                 ? (float)$produk['harga_pemasangan']
                                 : null;
 
@@ -416,7 +552,9 @@ if ($kategoriTerpilih && $merekTerpilih) {
                             'id' => (int)$produk['id'],
                             'nama' => $produk['nama_produk'],
                             'kategori' => $kategoriModal,
-                            'merek' => !empty($produk['nama_merek']) ? $produk['nama_merek'] : 'Tanpa Merek',
+                            'merek' => !empty($produk['nama_merek'])
+                                ? $produk['nama_merek']
+                                : 'Tanpa Merek',
                             'sku' => $produk['kode_sku'],
                             'harga' => (float)$produk['harga'],
                             'harga_pemasangan' => $hargaPemasanganData,
@@ -432,20 +570,28 @@ if ($kategoriTerpilih && $merekTerpilih) {
                             data-search="<?= htmlspecialchars(strtolower($produk['nama_produk'] . ' ' . $produk['kode_sku'] . ' ' . (!empty($produk['nama_merek']) ? $produk['nama_merek'] : '') . ' ' . $kategoriModal . ' ' . $deskripsi), ENT_QUOTES, 'UTF-8') ?>"
                         >
 
-                            <!-- GAMBAR (Ukuran disesuaikan untuk HP) -->
+                            <!-- GAMBAR -->
                             <div class="h-32 sm:h-56 bg-gray-100 flex items-center justify-center overflow-hidden relative">
+
                                 <?php if (!empty($produk['gambar']) && file_exists('uploads/' . $produk['gambar'])): ?>
+
                                     <img
                                         src="<?= htmlspecialchars($gambarPath) ?>"
                                         alt="<?= htmlspecialchars($produk['nama_produk']) ?>"
                                         class="w-full h-full object-contain p-2 sm:p-4 hover:scale-105 transition-transform duration-300"
                                     >
+
                                 <?php else: ?>
+
                                     <div class="text-gray-300 text-center">
                                         <i class="fa-solid fa-image text-3xl sm:text-5xl"></i>
-                                        <p class="text-[10px] sm:text-xs mt-1 sm:mt-2">Tidak ada gambar</p>
+                                        <p class="text-[10px] sm:text-xs mt-1 sm:mt-2">
+                                            Tidak ada gambar
+                                        </p>
                                     </div>
+
                                 <?php endif; ?>
+
                             </div>
 
                             <!-- INFORMASI PRODUK -->
@@ -453,23 +599,33 @@ if ($kategoriTerpilih && $merekTerpilih) {
 
                                 <!-- KATEGORI & MEREK -->
                                 <div class="flex flex-wrap gap-1 sm:gap-2 mb-2 sm:mb-3">
+
                                     <?php if (!empty($daftarKategori)): ?>
-                                        <?php foreach (array_slice($daftarKategori, 0, 1) as $namaKategori): // Ambil 1 kategori saja agar tidak penuh di HP ?>
+
+                                        <?php foreach (array_slice($daftarKategori, 0, 1) as $namaKategori): ?>
+
                                             <span class="inline-block w-fit bg-indigo-100 text-indigo-700 text-[9px] sm:text-xs font-semibold px-2 py-1 sm:px-3 sm:py-1.5 rounded-full">
                                                 <?= htmlspecialchars($namaKategori) ?>
                                             </span>
+
                                         <?php endforeach; ?>
+
                                     <?php else: ?>
+
                                         <span class="inline-block w-fit bg-gray-100 text-gray-500 text-[9px] sm:text-xs font-semibold px-2 py-1 sm:px-3 sm:py-1.5 rounded-full">
                                             Tanpa Kategori
                                         </span>
+
                                     <?php endif; ?>
 
                                     <?php if (!empty($produk['nama_merek'])): ?>
+
                                         <span class="inline-block w-fit bg-purple-100 text-purple-700 text-[9px] sm:text-xs font-semibold px-2 py-1 sm:px-3 sm:py-1.5 rounded-full">
                                             <?= htmlspecialchars($produk['nama_merek']) ?>
                                         </span>
+
                                     <?php endif; ?>
+
                                 </div>
 
                                 <!-- NAMA PRODUK -->
@@ -484,7 +640,10 @@ if ($kategoriTerpilih && $merekTerpilih) {
 
                                 <!-- HARGA -->
                                 <div class="mb-3 sm:mb-4 mt-auto">
-                                    <p class="text-[10px] sm:text-xs text-gray-500">Harga</p>
+                                    <p class="text-[10px] sm:text-xs text-gray-500">
+                                        Harga
+                                    </p>
+
                                     <p class="text-base sm:text-xl font-bold text-indigo-600">
                                         Rp <?= number_format((float)$produk['harga'], 0, ',', '.') ?>
                                     </p>
@@ -499,53 +658,77 @@ if ($kategoriTerpilih && $merekTerpilih) {
                                     <i class="fa-solid fa-eye"></i>
                                     Lihat Detail
                                 </button>
+
                             </div>
                         </div>
+
                     <?php endforeach; ?>
+
                 </div>
 
                 <!-- =====================================================
-                     KOTAK PAGINASI (HALAMAN) DI BAWAH GRID
+                     PAGINASI
                 ====================================================== -->
+
                 <?php if ($total_halaman > 1): ?>
+
                     <div class="flex justify-center items-center gap-1 sm:gap-2 mt-10 sm:mt-12 mb-4">
-                        
+
                         <!-- Tombol Prev -->
                         <?php if ($halaman_aktif > 1): ?>
-                            <a href="?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $halaman_aktif - 1 ?>#area-kategori" 
-                               class="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl bg-white/10 hover:bg-indigo-600 text-white font-bold transition shadow-sm border border-white/20 text-xs sm:text-base">
+
+                            <a
+                                href="?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $halaman_aktif - 1 ?>#area-kategori"
+                                class="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl bg-white/10 hover:bg-indigo-600 text-white font-bold transition shadow-sm border border-white/20 text-xs sm:text-base"
+                            >
                                 <i class="fa-solid fa-chevron-left"></i>
                             </a>
+
                         <?php endif; ?>
 
                         <!-- Nomor Halaman -->
                         <?php for ($i = 1; $i <= $total_halaman; $i++): ?>
+
                             <?php if ($i == $halaman_aktif): ?>
+
                                 <span class="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl bg-indigo-600 text-white font-black shadow-md border border-indigo-500 text-xs sm:text-base">
                                     <?= $i ?>
                                 </span>
+
                             <?php else: ?>
-                                <a href="?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $i ?>#area-kategori" 
-                                   class="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl bg-white/10 hover:bg-white/30 text-white font-bold transition shadow-sm border border-white/20 text-xs sm:text-base">
+
+                                <a
+                                    href="?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $i ?>#area-kategori"
+                                    class="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl bg-white/10 hover:bg-white/30 text-white font-bold transition shadow-sm border border-white/20 text-xs sm:text-base"
+                                >
                                     <?= $i ?>
                                 </a>
+
                             <?php endif; ?>
+
                         <?php endfor; ?>
 
                         <!-- Tombol Next -->
                         <?php if ($halaman_aktif < $total_halaman): ?>
-                            <a href="?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $halaman_aktif + 1 ?>#area-kategori" 
-                               class="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl bg-white/10 hover:bg-indigo-600 text-white font-bold transition shadow-sm border border-white/20 text-xs sm:text-base">
+
+                            <a
+                                href="?kategori=<?= urlencode($filterAktif) ?>&merek=<?= urlencode($merekAktif) ?>&halaman=<?= $halaman_aktif + 1 ?>#area-kategori"
+                                class="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl bg-white/10 hover:bg-indigo-600 text-white font-bold transition shadow-sm border border-white/20 text-xs sm:text-base"
+                            >
                                 <i class="fa-solid fa-chevron-right"></i>
                             </a>
+
                         <?php endif; ?>
 
                     </div>
+
                 <?php endif; ?>
 
             <?php else: ?>
+
                 <!-- PRODUK KOSONG -->
                 <div class="bg-white rounded-2xl border border-gray-100 shadow-sm text-center py-16 px-6">
+
                     <div class="w-20 h-20 mx-auto rounded-full bg-gray-100 flex items-center justify-center mb-5">
                         <i class="fa-solid fa-box-open text-3xl text-gray-400"></i>
                     </div>
@@ -565,11 +748,14 @@ if ($kategoriTerpilih && $merekTerpilih) {
                         <i class="fa-solid fa-layer-group"></i>
                         Kembali ke Semua Produk
                     </a>
+
                 </div>
+
             <?php endif; ?>
 
             <!-- BAGIAN BAWAH -->
             <div class="mt-14 text-center">
+
                 <p class="text-purple-200 text-sm mb-2">
                     Belum menemukan produk yang sesuai?
                 </p>
@@ -582,7 +768,9 @@ if ($kategoriTerpilih && $merekTerpilih) {
                     Konsultasikan kebutuhan CCTV Anda
                     <i class="fa-solid fa-arrow-right"></i>
                 </a>
+
             </div>
+
         </div>
     </section>
 </main>
@@ -610,12 +798,14 @@ if ($kategoriTerpilih && $merekTerpilih) {
 
             <!-- GAMBAR -->
             <div class="bg-gray-100 flex items-center justify-center p-6 min-h-[280px]">
+
                 <img
                     id="detailGambar"
                     src=""
                     alt="Produk"
                     class="w-full h-64 object-contain rounded-xl"
                 >
+
             </div>
 
             <!-- INFORMASI -->
@@ -623,6 +813,7 @@ if ($kategoriTerpilih && $merekTerpilih) {
 
                 <!-- KATEGORI & MEREK -->
                 <div class="flex flex-wrap gap-2 mb-3">
+
                     <span
                         id="detailKategori"
                         class="inline-block w-fit bg-indigo-100 text-indigo-700 text-xs font-semibold px-3 py-1.5 rounded-full"
@@ -632,16 +823,24 @@ if ($kategoriTerpilih && $merekTerpilih) {
                         id="detailMerek"
                         class="inline-block w-fit bg-purple-100 text-purple-700 text-xs font-semibold px-3 py-1.5 rounded-full"
                     ></span>
+
                 </div>
 
                 <!-- NAMA -->
-                <h2 id="detailNama" class="text-2xl font-bold text-gray-900 mb-2"></h2>
+                <h2
+                    id="detailNama"
+                    class="text-2xl font-bold text-gray-900 mb-2"
+                ></h2>
 
                 <!-- SKU -->
-                <p id="detailSKU" class="text-sm text-gray-500 mb-5"></p>
+                <p
+                    id="detailSKU"
+                    class="text-sm text-gray-500 mb-5"
+                ></p>
 
                 <!-- HARGA -->
                 <div class="mb-5">
+
                     <p class="text-sm text-gray-500 mb-1">
                         Harga
                     </p>
@@ -653,6 +852,7 @@ if ($kategoriTerpilih && $merekTerpilih) {
 
                     <!-- HARGA + PEMASANGAN -->
                     <div id="detailHargaPemasanganContainer" class="mt-3 hidden">
+
                         <p class="text-sm text-gray-500 mb-1">
                             Harga + Pemasangan
                         </p>
@@ -661,29 +861,42 @@ if ($kategoriTerpilih && $merekTerpilih) {
                             id="detailHargaPemasangan"
                             class="text-xl font-bold text-orange-500"
                         ></p>
+
                     </div>
+
                 </div>
 
                 <!-- STOK -->
                 <div class="mb-5">
+
                     <p class="text-sm text-gray-500 mb-1">
                         Ketersediaan
                     </p>
 
-                    <p id="detailStok" class="font-semibold text-gray-800"></p>
+                    <p
+                        id="detailStok"
+                        class="font-semibold text-gray-800"
+                    ></p>
+
                 </div>
 
                 <!-- DESKRIPSI -->
                 <div class="mb-6">
+
                     <p class="text-sm font-semibold text-gray-800 mb-2">
                         Deskripsi Produk
                     </p>
 
-                    <p id="detailDeskripsi" class="text-gray-600 text-sm leading-relaxed"></p>
+                    <p
+                        id="detailDeskripsi"
+                        class="text-gray-600 text-sm leading-relaxed"
+                    ></p>
+
                 </div>
 
                 <!-- BUTTON -->
                 <div class="flex gap-3">
+
                     <button
                         type="button"
                         onclick="tutupDetailProduk()"
@@ -698,8 +911,19 @@ if ($kategoriTerpilih && $merekTerpilih) {
                         method="POST"
                         class="flex-1"
                     >
-                        <input type="hidden" name="id" id="idProdukDetail" value="">
-                        <input type="hidden" name="paket" value="cctv">
+
+                        <input
+                            type="hidden"
+                            name="id"
+                            id="idProdukDetail"
+                            value=""
+                        >
+
+                        <input
+                            type="hidden"
+                            name="paket"
+                            value="cctv"
+                        >
 
                         <button
                             type="submit"
@@ -709,7 +933,9 @@ if ($kategoriTerpilih && $merekTerpilih) {
                             <i class="fa-solid fa-cart-shopping"></i>
                             <span>Keranjang</span>
                         </button>
+
                     </form>
+
                 </div>
             </div>
         </div>
@@ -725,6 +951,7 @@ if ($kategoriTerpilih && $merekTerpilih) {
 /* =========================================================
    SEARCH PRODUK REAL-TIME
 ========================================================= */
+
 (function () {
     const input = document.getElementById('searchProduk');
     const clearButton = document.getElementById('clearSearchProduk');
@@ -739,20 +966,40 @@ if ($kategoriTerpilih && $merekTerpilih) {
         let jumlahDitemukan = 0;
 
         cards.forEach(function (card) {
-            const dataSearch = (card.getAttribute('data-search') || '').toLowerCase();
-            const cocok = kataKunci === '' || dataSearch.indexOf(kataKunci) !== -1;
+            const dataSearch = (
+                card.getAttribute('data-search') || ''
+            ).toLowerCase();
+
+            const cocok =
+                kataKunci === '' ||
+                dataSearch.indexOf(kataKunci) !== -1;
+
             card.style.display = cocok ? '' : 'none';
-            if (cocok) jumlahDitemukan++;
+
+            if (cocok) {
+                jumlahDitemukan++;
+            }
         });
 
         if (kataKunci !== '') {
             clearButton.classList.remove('hidden');
             clearButton.classList.add('flex');
+
             info.classList.remove('hidden');
-            info.textContent = 'Menampilkan ' + jumlahDitemukan + ' dari ' + totalProduk + ' produk di halaman ini untuk "' + input.value.trim() + '"';
+
+            info.textContent =
+                'Menampilkan ' +
+                jumlahDitemukan +
+                ' dari ' +
+                totalProduk +
+                ' produk di halaman ini untuk "' +
+                input.value.trim() +
+                '"';
+
         } else {
             clearButton.classList.add('hidden');
             clearButton.classList.remove('flex');
+
             info.classList.add('hidden');
             info.textContent = '';
         }
@@ -770,9 +1017,11 @@ if ($kategoriTerpilih && $merekTerpilih) {
 /* =========================================================
    BUKA DETAIL PRODUK
 ========================================================= */
+
 function bukaDetailProduk(produk) {
 
-    document.getElementById('detailNama').textContent = produk.nama;
+    document.getElementById('detailNama').textContent =
+        produk.nama;
 
     document.getElementById('detailKategori').textContent =
         produk.kategori;
@@ -786,13 +1035,14 @@ function bukaDetailProduk(produk) {
     /* =====================================================
        HARGA
     ===================================================== */
+
     document.getElementById('detailHarga').textContent =
         'Rp ' + Number(produk.harga).toLocaleString('id-ID');
 
     /* =====================================================
        HARGA + PEMASANGAN
-       Hanya tampil jika memang ada harga pemasangan.
     ===================================================== */
+
     const hargaPemasanganContainer =
         document.getElementById('detailHargaPemasanganContainer');
 
@@ -805,9 +1055,11 @@ function bukaDetailProduk(produk) {
         Number(produk.harga_pemasangan) > 0
     ) {
         hargaPemasangan.textContent =
-            'Rp ' + Number(produk.harga_pemasangan).toLocaleString('id-ID');
+            'Rp ' +
+            Number(produk.harga_pemasangan).toLocaleString('id-ID');
 
         hargaPemasanganContainer.classList.remove('hidden');
+
     } else {
         hargaPemasangan.textContent = '';
         hargaPemasanganContainer.classList.add('hidden');
@@ -816,28 +1068,44 @@ function bukaDetailProduk(produk) {
     /* =====================================================
        STOK
     ===================================================== */
-    const detailStok = document.getElementById('detailStok');
-    const tombolKeranjang = document.getElementById('btnKeranjangDetail');
-    const idProdukDetail = document.getElementById('idProdukDetail');
+
+    const detailStok =
+        document.getElementById('detailStok');
+
+    const tombolKeranjang =
+        document.getElementById('btnKeranjangDetail');
+
+    const idProdukDetail =
+        document.getElementById('idProdukDetail');
 
     if (Number(produk.stok) > 0) {
-        detailStok.textContent = produk.stok + ' unit tersedia';
+        detailStok.textContent =
+            produk.stok + ' unit tersedia';
 
         idProdukDetail.value = produk.id;
 
         tombolKeranjang.disabled = false;
-        tombolKeranjang.classList.remove('opacity-50', 'cursor-not-allowed');
+
+        tombolKeranjang.classList.remove(
+            'opacity-50',
+            'cursor-not-allowed'
+        );
 
         tombolKeranjang.innerHTML =
             '<i class="fa-solid fa-cart-shopping"></i>' +
             '<span>Keranjang</span>';
+
     } else {
         detailStok.textContent = 'Stok habis';
 
         idProdukDetail.value = '';
 
         tombolKeranjang.disabled = true;
-        tombolKeranjang.classList.add('opacity-50', 'cursor-not-allowed');
+
+        tombolKeranjang.classList.add(
+            'opacity-50',
+            'cursor-not-allowed'
+        );
 
         tombolKeranjang.innerHTML =
             '<i class="fa-solid fa-ban"></i>' +
@@ -847,6 +1115,7 @@ function bukaDetailProduk(produk) {
     /* =====================================================
        DESKRIPSI
     ===================================================== */
+
     document.getElementById('detailDeskripsi').textContent =
         produk.deskripsi
             ? produk.deskripsi
@@ -855,7 +1124,9 @@ function bukaDetailProduk(produk) {
     /* =====================================================
        GAMBAR
     ===================================================== */
-    const gambar = document.getElementById('detailGambar');
+
+    const gambar =
+        document.getElementById('detailGambar');
 
     gambar.src = produk.gambar
         ? 'uploads/' + produk.gambar
@@ -866,7 +1137,9 @@ function bukaDetailProduk(produk) {
     /* =====================================================
        BUKA MODAL
     ===================================================== */
-    const modal = document.getElementById('modalDetailProduk');
+
+    const modal =
+        document.getElementById('modalDetailProduk');
 
     modal.classList.remove('hidden');
     modal.classList.add('flex');
@@ -877,8 +1150,10 @@ function bukaDetailProduk(produk) {
 /* =========================================================
    TUTUP DETAIL
 ========================================================= */
+
 function tutupDetailProduk() {
-    const modal = document.getElementById('modalDetailProduk');
+    const modal =
+        document.getElementById('modalDetailProduk');
 
     modal.classList.add('hidden');
     modal.classList.remove('flex');
@@ -889,9 +1164,10 @@ function tutupDetailProduk() {
 /* =========================================================
    KLIK BACKDROP
 ========================================================= */
+
 document
     .getElementById('modalDetailProduk')
-    .addEventListener('click', function(event) {
+    .addEventListener('click', function (event) {
         if (event.target === this) {
             tutupDetailProduk();
         }
@@ -900,11 +1176,13 @@ document
 /* =========================================================
    ESCAPE
 ========================================================= */
-document.addEventListener('keydown', function(event) {
+
+document.addEventListener('keydown', function (event) {
     if (event.key === 'Escape') {
         tutupDetailProduk();
     }
 });
+
 </script>
 
 <!-- =========================================================
@@ -912,8 +1190,10 @@ document.addEventListener('keydown', function(event) {
 ========================================================= -->
 
 <style>
-/* Mencegah layar tergeser di mobile (Menghilangkan garis putih di kanan) */
-html, body {
+
+/* Mencegah layar tergeser di mobile */
+html,
+body {
     overflow-x: hidden;
     width: 100%;
     position: relative;
@@ -926,30 +1206,152 @@ html, body {
 
 /* Garis Indikator Scroll Kustom */
 .custom-scrollbar {
-    /* Untuk Firefox */
     scrollbar-width: thin;
     scrollbar-color: rgba(249, 115, 22, 0.8) transparent;
 }
 
 /* Untuk Chrome, Edge, Safari */
 .custom-scrollbar::-webkit-scrollbar {
-    height: 4px; /* Ketebalan garis indikator */
+    height: 4px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
-    background: rgba(255, 255, 255, 0.05); /* Warna jalur latar belakang transparan */
+    background: rgba(255, 255, 255, 0.05);
     border-radius: 10px;
-    margin: 0 10px; /* Jarak agar garis tidak mentok ke ujung kiri/kanan */
+    margin: 0 10px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: linear-gradient(to right, #3b82f6, #f97316); /* Gradasi warna garis (biru ke oranye) */
+    background: linear-gradient(to right, #3b82f6, #f97316);
     border-radius: 10px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
     background: #ea580c;
 }
+
 </style>
+
+<!-- =========================================================
+     FIX HEADER KHUSUS HALAMAN KATEGORI.PHP
+========================================================= -->
+
+<script>
+(function () {
+
+    function pasangHeaderTetap() {
+
+        const selectors = [
+            '#site-header',
+            '#main-header',
+            '.site-header',
+            '.main-header',
+            'header',
+            '[role="banner"]',
+            '.navbar',
+            'nav'
+        ];
+
+        let header = null;
+
+        for (const selector of selectors) {
+            header = document.querySelector(selector);
+
+            if (header) {
+                break;
+            }
+        }
+
+        if (
+            !header ||
+            header.dataset.kategoriHeaderFixed === '1'
+        ) {
+            return;
+        }
+
+        // Membuat ruang kosong agar konten tidak tertutup header
+        const spacer = document.createElement('div');
+
+        spacer.setAttribute('aria-hidden', 'true');
+        spacer.style.width = '100%';
+        spacer.style.pointerEvents = 'none';
+
+        header.insertAdjacentElement('afterend', spacer);
+
+        header.dataset.kategoriHeaderFixed = '1';
+
+        function updateHeader() {
+
+            const height =
+                header.getBoundingClientRect().height;
+
+            spacer.style.height = height + 'px';
+
+            header.style.setProperty(
+                'position',
+                'fixed',
+                'important'
+            );
+
+            header.style.setProperty(
+                'top',
+                '0',
+                'important'
+            );
+
+            header.style.setProperty(
+                'left',
+                '0',
+                'important'
+            );
+
+            header.style.setProperty(
+                'right',
+                '0',
+                'important'
+            );
+
+            header.style.setProperty(
+                'width',
+                '100%',
+                'important'
+            );
+
+            header.style.setProperty(
+                'max-width',
+                'none',
+                'important'
+            );
+
+            header.style.setProperty(
+                'z-index',
+                '99999',
+                'important'
+            );
+
+            header.style.setProperty(
+                'margin',
+                '0',
+                'important'
+            );
+        }
+
+        updateHeader();
+
+        window.addEventListener('resize', updateHeader);
+        window.addEventListener('load', updateHeader);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener(
+            'DOMContentLoaded',
+            pasangHeaderTetap
+        );
+    } else {
+        pasangHeaderTetap();
+    }
+
+})();
+</script>
 
 <?php include 'footer.php'; ?>

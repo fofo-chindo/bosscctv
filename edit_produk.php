@@ -133,6 +133,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_produk'])) {
 
     $stok = (int) ($_POST['stok'] ?? 0);
     $deskripsi = trim($_POST['deskripsi'] ?? '');
+    
+    // TAMBAHAN: Menangkap input spesifikasi
+    $spesifikasi = trim($_POST['spesifikasi'] ?? ''); 
+    
     $is_featured = isset($_POST['is_featured']) ? 1 : 0;
 
     /* =====================================================
@@ -282,6 +286,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_produk'])) {
                 category_id = ?,
                 nama_produk = ?,
                 deskripsi = ?,
+                spesifikasi = ?, /* <-- TAMBAHAN: Kolom spesifikasi */
                 harga = ?,
                 harga_pemasangan = ?,
                 stok = ?,
@@ -290,11 +295,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_produk'])) {
             WHERE id = ?
         ");
 
+        // PERBAIKAN FATAL ERROR: Mengubah format string dari "issddisii" menjadi "isssddisii" (tambah satu 's' untuk spesifikasi)
         $stmtUpdate->bind_param(
-            "issddisii",
+            "isssddisii",
             $kategori_utama,
             $nama,
             $deskripsi,
+            $spesifikasi, /* <-- TAMBAHAN: Variabel spesifikasi masuk ke urutan */
             $harga,
             $harga_pemasangan,
             $stok,
@@ -787,7 +794,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_produk'])) {
                     class="w-full border border-gray-300 rounded-xl p-3
                            focus:ring-2 focus:ring-blue-500
                            focus:border-blue-500 outline-none"
-                ><?= htmlspecialchars($produk['deskripsi']) ?></textarea>
+                ><?= htmlspecialchars($produk['deskripsi'] ?? '') ?></textarea>
+
+            </div>
+
+            <!-- =================================================
+                 SPESIFIKASI (TAMBAHAN BARU)
+            ================================================== -->
+            <div>
+
+                <label class="block text-sm font-semibold mb-2">
+                    Spesifikasi CCTV <span class="text-xs text-gray-500 font-normal">(Opsional)</span>
+                </label>
+
+                <textarea
+                    name="spesifikasi"
+                    rows="4"
+                    placeholder="Contoh: Lensa 4mm, Resolusi 1080p, dll..."
+                    class="w-full border border-gray-300 rounded-xl p-3
+                           focus:ring-2 focus:ring-blue-500
+                           focus:border-blue-500 outline-none"
+                ><?= htmlspecialchars($produk['spesifikasi'] ?? '') ?></textarea>
 
             </div>
 
