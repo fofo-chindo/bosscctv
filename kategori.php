@@ -17,7 +17,7 @@ $merekTerpilih    = null;
 $produkList       = [];
 
 // Konfigurasi Paginasi
-$batas_produk = 10;
+$batas_produk = 12;
 $halaman_aktif = isset($_GET['halaman']) ? (int)$_GET['halaman'] : 1;
 
 if ($halaman_aktif < 1) {
